@@ -65,6 +65,19 @@ table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
 tr.detail > td { background: color-mix(in srgb, var(--head) 4%, var(--card)); padding: 8px 12px 12px; }
 tr.detail table { width: 100%; }
 .foot { font-size: 12px; margin: 8px 0 32px; }
+.copy-row { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.copy-row span { display: block; font-size: 12px; }
+.copy-row em { font-style: normal; font-weight: 600; color: var(--text); }
+.copy-row textarea { grid-column: 1 / -1; width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); padding: 6px 8px; resize: vertical; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.grid td.rule { white-space: normal; min-width: 180px; font-size: 12px; }
+.grid td.lowcol { min-width: 220px; text-align: right; }
+.grid td.sug { background: color-mix(in srgb, var(--accent) 8%, transparent); user-select: all; }
+.grid tr.dim td { opacity: .5; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
+.ok { color: var(--accent); }
+.warn { color: #c77700; }
+@media (max-width: 640px) { .copy-row { grid-template-columns: 1fr; } }
 @media (max-width: 640px) {
   .grid td.name { min-width: 200px; }
   input[type=search] { min-width: 0; width: 100%; }

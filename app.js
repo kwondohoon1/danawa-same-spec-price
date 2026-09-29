@@ -10,12 +10,21 @@ const CATS = {
 };
 const OWN_SELLER = /한성컴퓨터/;          // 다나와 상품명에 붙는 자사 유통사 표기
 const EXCLUDE = /중고|해외구매|리퍼|벌크/;
+const SHARED_BRAND = /삼성/;               // 여러 판매처가 같은 상품을 파는 브랜드 → 동일상품 타 판매처도 경쟁에 포함
+const TARGET = 0.99;                     // 제안가 = 경쟁 최저가 × 99% (1% 낮게)
+const KEEP_HI = 0.995;                   // 경쟁가 대비 -0.5% ~ -1% 이면 유지
 
-const state = { db: {}, rows: [], openRow: null };
+// G마켓 조건 기본값 (엑셀 정산가세팅 '마켓 조건'을 찾지 못했을 때)
+const G_DEFAULT = { md: 0.02, sel: 0.11, selS: 0.02, dup: 0.08, card: 0.07, cardS: 0.5, capH: 150000, hi: 1200000, capL: 70000, fee: 0.09, pro: 0.02 };
+const G_LABELS = { 'MD쿠폰': 'md', '선택쿠폰': 'sel', '선택쿠폰셀러부담': 'selS', '중복쿠폰(셀러부담)': 'dup', '카드즉시할인': 'card', '카드할인셀러부담비율': 'cardS', '카드할인한도(고가)': 'capH', '카드할인고가기준금액': 'hi', '카드할인한도(중저가)': 'capL', 'Cat수수료': 'fee', '프로모션수수료': 'pro' };
+
+const state = { db: {}, rows: [], g: { ...G_DEFAULT }, gFromExcel: false, openRow: null, results: [] };
 const $ = (s) => document.querySelector(s);
 const won = (n) => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('ko-KR'));
 const signed = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(Math.round(n)).toLocaleString('ko-KR');
+const pctTxt = (p) => (p == null ? '-' : (p > 0 ? '+' : '') + (p * 100).toFixed(2) + '%');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fl10 = (n) => Math.floor(n / 10 + 1e-9) * 10;
 
 // ---------- CSV ----------
 function parseCSV(text) {
@@ -36,55 +45,80 @@ function parseCSV(text) {
   return { head, rows: rows.filter((r) => r.length > 1) };
 }
 
-// ---------- 스펙 키 ----------
+// ---------- 스펙 파싱 ----------
 const norm = (s) => String(s || '').toUpperCase().replace(/\s+/g, ' ').trim();
-
 function gpuChip(s) {
   const m = norm(s).match(/\b(RTX|GTX|RX|ARC)\s*([A-Z]?\d{3,4})\s*(TI SUPER|TI|SUPER|XTX|XT|GRE)?\b/);
   return m ? [m[1], m[2], m[3]].filter(Boolean).join(' ') : '';
 }
 function gb(s) { const m = String(s || '').match(/(\d+)\s*(TB|GB)/i); return m ? (m[2].toUpperCase() === 'TB' ? +m[1] * 1024 : +m[1]) : null; }
-function sizeLabel(g) { return g >= 1024 ? g / 1024 + 'TB' : g + 'GB'; }
+const sizeLabel = (g) => (g >= 1024 ? g / 1024 + 'TB' : g + 'GB');
+const mbps = (s) => { const m = String(s || '').replace(/,/g, '').match(/(\d+)\s*MB/i); return m ? +m[1] : 0; };
+const years = (s) => { const m = String(s || '').match(/(\d+)\s*년/); return m ? +m[1] : 0; };
+const fansOf = (s) => { const m = String(s || '').match(/(\d)\s*팬/); return m ? +m[1] : 0; };
+const fansFromName = (n) => (/TRIPLE|3\s*FAN/i.test(n) ? 3 : /DUAL|2\s*FAN/i.test(n) ? 2 : /SINGLE|1\s*FAN/i.test(n) ? 1 : 0);
+const clOf = (s) => { const m = String(s || '').match(/CL\s*(\d+)/i); return m ? +m[1] : 0; };
 
-const keyers = {
-  gpu: {
-    fromSpec: (sp) => { const c = gpuChip(sp.chipset); const m = gb(sp.memory_size); return c && m ? `${c} · ${m}GB` : ''; },
-    fromName: (name) => { const c = gpuChip(name); const m = gb(name); return c && m ? `${c} · ${m}GB` : ''; },
-  },
-  ssd: {
-    fromSpec: (sp) => {
-      const cap = gb(sp.capacity); if (!cap) return '';
-      const gen = (String(sp.interface).match(/PCIe\s*(\d)\.0/i) || [])[1];
-      const ff = /M\.2/i.test(sp.form_factor) ? 'M.2' : (sp.form_factor || '').split(' ')[0];
-      const bus = gen ? `PCIe${gen}.0` : (/SATA/i.test(sp.interface) ? 'SATA' : (sp.interface || '').split(' ')[0]);
-      return [ff, bus, sizeLabel(cap)].filter(Boolean).join(' · ');
-    },
-    fromName: null, // SSD는 이름만으로 세대를 알 수 없어 다나와 상품 매칭이 필요
-  },
-  ram: {
-    fromSpec: (sp) => {
-      if (sp.usage && !/데스크탑/.test(sp.usage)) return '';
-      const gen = norm(sp.generation); const spd = (String(sp.speed).match(/(\d{4,5})/) || [])[1];
-      const cap = gb(sp.capacity); const mods = parseInt(sp.module_count, 10) || ((String(sp.capacity).match(/x\s*(\d)/i) || [])[1] | 0) || 1;
-      return gen && spd && cap ? `${gen}-${spd} · ${cap}GB (${mods}개)` : '';
-    },
-    fromName: (name) => {
-      const n = norm(name);
-      const gen = (n.match(/DDR(\d)/) || n.match(/\bD(\d)-/) || [])[1];
-      const spd = (n.match(/(?:DDR\d|D\d)-(\d{4,5})/) || [])[1];
-      const kit = n.match(/(\d+)\s*GB\s*\(\s*(\d+)\s*G?B?\s*X\s*(\d)\s*\)/);
-      const cap = kit ? +kit[1] : gb(n); const mods = kit ? +kit[3] : 1;
-      return gen && spd && cap ? `DDR${gen}-${spd} · ${cap}GB (${mods}개)` : '';
-    },
-  },
-};
+// 상품 속성 (다나와 스펙 → 공통 형태)
+function attrsFromSpec(cat, sp, name) {
+  if (cat === 'gpu') {
+    const chip = gpuChip(sp.chipset), mem = gb(sp.memory_size);
+    return { base: chip && mem ? `${chip} · ${mem}GB` : '', fans: fansOf(sp.fans) || fansFromName(name), led: /LED 라이트/.test(sp.full_spec || '') || /\bA?RGB\b/i.test(name) };
+  }
+  if (cat === 'ssd') {
+    const cap = gb(sp.capacity);
+    const gen = (String(sp.interface).match(/PCIe\s*(\d)\.0/i) || [])[1];
+    const ff = /M\.2/i.test(sp.form_factor) ? 'M.2' : (sp.form_factor || '').split(' ')[0];
+    const bus = gen ? `PCIe${gen}.0` : (/SATA/i.test(sp.interface) ? 'SATA' : (sp.interface || '').split(' ')[0]);
+    return {
+      base: cap ? [ff, bus, sizeLabel(cap)].filter(Boolean).join(' · ') : '',
+      nand: /MLC/.test(sp.nand) ? 'MLC' : /TLC/.test(sp.nand) ? 'TLC' : /QLC/.test(sp.nand) ? 'QLC' : '',
+      dram: /DRAM 탑재/.test(sp.dram || ''), read: mbps(sp.seq_read), write: mbps(sp.seq_write), warranty: years(sp.warranty),
+    };
+  }
+  if (sp.usage && !/데스크탑/.test(sp.usage)) return { base: '' };
+  const gen = norm(sp.generation), spd = (String(sp.speed).match(/(\d{4,5})/) || [])[1];
+  const cap = gb(sp.capacity), mods = parseInt(sp.module_count, 10) || ((String(sp.capacity).match(/x\s*(\d)/i) || [])[1] | 0) || 1;
+  return { base: gen && spd && cap ? `${gen}-${spd} · ${cap}GB (${mods}개)` : '', cl: clOf(sp.timing) || clOf(name), rgb: /RGB/i.test(sp.led_color || '') || /RGB/i.test(name) };
+}
+
+// 엑셀 모델명 → 속성 (다나와 미등록 모델용)
+function attrsFromName(cat, name) {
+  const n = norm(name);
+  if (cat === 'gpu') { const c = gpuChip(n), m = gb(n); return { base: c && m ? `${c} · ${m}GB` : '', fans: fansFromName(n), led: /\bA?RGB\b/.test(n) }; }
+  if (cat === 'ram') {
+    const gen = (n.match(/DDR(\d)/) || n.match(/\bD(\d)-/) || [])[1];
+    const spd = (n.match(/(?:DDR\d|D\d)-(\d{4,5})/) || [])[1];
+    const kit = n.match(/(\d+)\s*GB\s*\(\s*(\d+)\s*G?B?\s*X\s*(\d)\s*\)/);
+    const cap = kit ? +kit[1] : gb(n), mods = kit ? +kit[3] : 1;
+    return { base: gen && spd && cap ? `DDR${gen}-${spd} · ${cap}GB (${mods}개)` : '', cl: clOf(n), rgb: /RGB/.test(n) };
+  }
+  return { base: '' }; // SSD는 다나와 상품 매칭이 있어야 세대/성능을 알 수 있음
+}
+
+// 우리 제품 속성 → 경쟁 상품 조건 (같거나 더 좋은 스펙만)
+function makeRule(cat, a) {
+  const parts = [a.base], tests = [];
+  if (cat === 'gpu') {
+    if (a.fans) { parts.push(`${a.fans}팬 이상`); tests.push((b) => b.fans >= a.fans); }
+    if (a.led) { parts.push('LED'); tests.push((b) => b.led); }
+  } else if (cat === 'ssd') {
+    if (a.nand === 'TLC' || a.nand === 'MLC') { parts.push('TLC 이상'); tests.push((b) => b.nand === 'TLC' || b.nand === 'MLC'); }
+    if (a.dram) { parts.push('DRAM'); tests.push((b) => b.dram); }
+    const r = Math.floor(a.read / 1000) * 1000, w = Math.floor(a.write / 1000) * 1000;
+    if (r || w) { parts.push(`${r.toLocaleString()}/${w.toLocaleString()}MB/s 이상`); tests.push((b) => b.read >= r && b.write >= w); }
+    if (a.warranty) { parts.push(`${a.warranty}년 이상`); tests.push((b) => b.warranty >= a.warranty); }
+  } else {
+    if (a.cl) { parts.push(`CL${a.cl} 이하`); tests.push((b) => b.cl && b.cl <= a.cl); }
+    if (a.rgb) { parts.push('RGB'); tests.push((b) => b.rgb); }
+  }
+  return { label: parts.join(' · '), test: (b) => tests.every((t) => t(b)) };
+}
 
 // ---------- 데이터 로드 ----------
 async function loadCat(cat) {
-  const [p, s] = await Promise.all([
-    fetch(`${SRC}/latest/${cat}.csv`).then((r) => { if (!r.ok) throw new Error(`${cat}.csv ${r.status}`); return r.text(); }),
-    fetch(`${SRC}/specs/${cat}_specs.csv`).then((r) => { if (!r.ok) throw new Error(`${cat}_specs.csv ${r.status}`); return r.text(); }),
-  ]);
+  const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(`${u.split('/').pop()} ${r.status}`); return r.text(); });
+  const [p, s] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`)]);
   const prices = parseCSV(p), specs = parseCSV(s);
   const dates = prices.head.slice(2);
   const specBy = {};
@@ -96,14 +130,13 @@ async function loadCat(cat) {
     let price = null, date = null;
     for (let i = 2; i < r.length; i++) { const v = parseInt(r[i], 10); if (v > 0) { price = v; date = dates[i - 2]; break; } }
     if (!price) continue;
-    const last = parseInt(r[r.length - 1], 10) || null;
     const sp = specBy[code] || {};
-    const key = keyers[cat].fromSpec(sp);
-    items.push({ code, name, price, date, week: last, key, sp, own: OWN_SELLER.test(name) });
+    const a = attrsFromSpec(cat, sp, name);
+    items.push({ code, name, price, date, week: parseInt(r[r.length - 1], 10) || null, sp, a, key: a.base, own: OWN_SELLER.test(name) });
   }
   const groups = {};
   for (const it of items) if (it.key) (groups[it.key] ||= []).push(it);
-  for (const k in groups) groups[k].sort((a, b) => a.price - b.price);
+  for (const k in groups) groups[k].sort((x, y) => x.price - y.price);
   return { items, groups, today: dates[0] };
 }
 
@@ -112,10 +145,9 @@ async function loadAll() {
   try {
     const res = await Promise.all(Object.keys(CATS).map(async (c) => [c, await loadCat(c)]));
     res.forEach(([c, d]) => (state.db[c] = d));
-    const today = res[0][1].today;
     const n = res.reduce((a, [, d]) => a + d.items.length, 0);
-    st.innerHTML = `가격 데이터 <b>${today}</b> 기준 · ${n.toLocaleString()}개 상품 불러옴`;
-    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 매일 갱신). 중고·해외구매·리퍼·벌크 상품 제외.`;
+    st.innerHTML = `가격 데이터 <b>${res[0][1].today}</b> 기준 · ${n.toLocaleString()}개 상품 불러옴`;
+    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 매일 갱신, 배송비 미포함). 중고·해외구매·리퍼·벌크 제외.`;
     renderBrowseSpecs();
     if (state.rows.length) renderCompare();
   } catch (e) {
@@ -133,7 +165,7 @@ function readExcel(file) {
       const rows = extractRows(wb);
       if (!rows.length) throw new Error("'모델명'과 '노출가 (2차혜택가)' 열이 있는 시트를 찾지 못했습니다");
       state.rows = rows;
-      fs.innerHTML = `<b>${esc(file.name)}</b> · ${rows.length}개 모델 읽음 <span class="muted">(브라우저 메모리에만 있음)</span>`;
+      fs.innerHTML = `<b>${esc(file.name)}</b> · ${rows.length}개 모델 읽음${state.gFromExcel ? ' · G마켓 조건 반영' : ' · <span class="err">G마켓 조건을 못 찾아 기본값 사용</span>'} <span class="muted">(브라우저 메모리에만 있음)</span>`;
       renderCompare();
     } catch (e) {
       fs.innerHTML = `<span class="err">엑셀을 읽지 못했습니다: ${esc(e.message)}</span>`;
@@ -142,28 +174,60 @@ function readExcel(file) {
   reader.readAsArrayBuffer(file);
 }
 
-// 헤더 행에서 '모델명' + '노출가 (2차…)' 열을 찾는다 (정산가세팅 시트 우선)
+const squash = (v) => String(v ?? '').replace(/\s+/g, '');
 function extractRows(wb) {
   const order = [...wb.SheetNames].sort((a, b) => (b === '정산가세팅') - (a === '정산가세팅'));
   for (const name of order) {
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' });
     for (let h = 0; h < Math.min(aoa.length, 60); h++) {
-      const head = aoa[h].map((v) => String(v).replace(/\s+/g, ''));
+      const head = aoa[h].map(squash);
       const iModel = head.indexOf('모델명');
       const iPrice = head.findIndex((v) => /^노출가\(2차/.test(v));
       if (iModel < 0 || iPrice < 0) continue;
-      const iCat = head.indexOf('카테고리'), iBrand = head.indexOf('브랜드');
+      const col = (t) => head.indexOf(t);
+      const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가');
       const out = [];
       for (let r = h + 1; r < aoa.length; r++) {
-        const model = String(aoa[r][iModel] || '').trim();
-        const price = Number(aoa[r][iPrice]);
+        const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
         if (!model || !(price > 0)) continue;
-        out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model, price, sheet: name });
+        out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model, price,
+          cost: iCost >= 0 ? Number(aoa[r][iCost]) || null : null, settle: iSettle >= 0 ? Number(aoa[r][iSettle]) || null : null });
       }
-      if (out.length) return out;
+      if (out.length) { readGConditions(aoa, h); return out; }
     }
   }
   return [];
+}
+// '마켓 조건' 표에서 G마켓·옥션 열 값을 읽는다
+function readGConditions(aoa, limit) {
+  state.g = { ...G_DEFAULT }; state.gFromExcel = false;
+  let gCol = -1, found = 0;
+  for (let r = 0; r < limit; r++) {
+    const row = aoa[r] || [];
+    if (gCol < 0) { gCol = row.findIndex((v) => /^G마켓/.test(squash(v))); if (gCol >= 0) continue; }
+    const key = G_LABELS[squash(row[0])];
+    if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { state.g[key] = Number(row[gCol]); found++; }
+  }
+  state.gFromExcel = found >= 8;
+}
+
+// ---------- G마켓 계산 (엑셀 정산가세팅과 같은 식) ----------
+const gSecond = (L, g) => L - fl10(L * g.sel) - fl10(L * g.dup);
+function gSettle(L, g) {
+  const sa = fl10(L * g.sel), da = fl10(L * g.dup), R = L - sa - da;
+  const card = Math.min(fl10(R * g.card), R >= g.hi ? g.capH : g.capL);
+  return L - L * g.fee - L * g.pro - (g.sel ? (sa / g.sel) * g.selS : 0) - da - card * g.cardS;
+}
+function gListFrom2nd(O, g) {
+  const L1 = fl10(O / (1 - g.sel - g.dup));
+  for (const L of [L1 + 10, L1, L1 - 10]) if (gSecond(L, g) <= O) return L;
+  return L1 - 10;
+}
+const settleAt2nd = (O, g) => gSettle(gListFrom2nd(O, g), g);
+function breakeven2nd(cost, g) { // 정산가 ≥ 원가가 되는 최소 2차혜택가
+  let lo = 0, hi = Math.ceil(cost * 3 / 10) * 10;
+  while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gSettle(mid, g) >= cost) hi = mid; else lo = mid; }
+  return gSecond(hi, g);
 }
 
 // ---------- 자사 모델 ↔ 다나와 상품 매칭 ----------
@@ -182,13 +246,11 @@ function catOf(row) {
   if (/DDR\d|\bD\d-/i.test(row.model)) return 'ram';
   return 'ssd';
 }
-// key가 있으면 같은 동일스펙 그룹 안에서만 찾는다 (다른 스펙 상품과 잘못 매칭 방지)
-function findListing(cat, row, key) {
+function findListing(cat, row, base) {
   const d = state.db[cat]; if (!d) return null;
-  const want = tokens(row.model);
-  const cap = gb(row.model);
+  const want = tokens(row.model), cap = gb(row.model);
   let best = null, bestScore = 0;
-  for (const it of key ? d.groups[key] || [] : d.items) {
+  for (const it of base ? d.groups[base] || [] : d.items) {
     const have = new Set(tokens(it.name));
     let hit = 0; for (const t of want) if (have.has(t)) hit++;
     if (cat !== 'gpu' && cap && gb(it.name) !== cap) continue;
@@ -198,70 +260,124 @@ function findListing(cat, row, key) {
   return bestScore >= 0.85 ? best : null;
 }
 
-function analyze(row) {
-  const cat = catOf(row);
-  const d = state.db[cat];
-  let key = keyers[cat].fromName ? keyers[cat].fromName(row.model) : '';
-  const listing = findListing(cat, row, key);
-  if (!key) key = (listing && listing.key) || '';
-  const group = (d && key && d.groups[key]) || [];
-  const others = group.filter((it) => !it.own && (!listing || it.code !== listing.code));
+function matchRow(row) {
+  const cat = catOf(row), nameA = attrsFromName(cat, row.model);
+  return { row, cat, nameA, listing: findListing(cat, row, nameA.base) };
+}
+
+function analyze({ row, cat, nameA, listing }, ownCodes) {
+  const d = state.db[cat], g = state.g;
+  // 속성: 다나와 상품이 있으면 그 스펙, 없으면 모델명. 이름의 RGB/팬 정보는 항상 반영
+  const a = listing ? { ...listing.a } : nameA;
+  if (cat === 'gpu') { a.led = a.led || nameA.led; a.fans = a.fans || nameA.fans; }
+  if (cat === 'ram') { a.rgb = a.rgb || nameA.rgb; a.cl = a.cl || nameA.cl; }
+  const rule = a.base ? makeRule(cat, a) : null;
+  const group = (d && a.base && d.groups[a.base]) || [];
+  // 엑셀에 있는 자사 모델의 다나와 상품은 경쟁에서 제외.
+  // 단, 여러 판매처가 파는 브랜드(삼성 등)는 같은 상품이 우리보다 싸면 타 판매처로 보고 포함
+  const sameOther = !!(listing && !listing.own && SHARED_BRAND.test(row.brand + ' ' + row.model) && listing.price < row.price);
+  const others = group.filter((it) => !it.own && rule.test(it.a) && (!ownCodes.has(it.code) || (sameOther && it.code === listing.code)));
   const low = others[0] || null;
   const diff = low ? row.price - low.price : null;
   const cheaper = others.filter((it) => it.price < row.price).length;
-  return { ...row, catKey: cat, key, listing, group, others, low, diff, pct: low ? diff / low.price : null, rank: low ? cheaper + 1 : null, total: others.length + 1 };
+
+  // 제안 노출가
+  let sug = row.price, verdict = '비교 불가', vcls = 'muted', be = null;
+  if (low) {
+    const ratio = row.price / low.price;
+    if (ratio >= TARGET && ratio <= KEEP_HI) { verdict = '유지'; vcls = 'ok'; }
+    else {
+      sug = fl10(low.price * TARGET);
+      verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'down' : 'up';
+    }
+    if (row.cost) {
+      be = breakeven2nd(row.cost, g);
+      if (settleAt2nd(sug, g) < row.cost) { sug = row.price; verdict = '손실·보류'; vcls = 'warn'; }
+    }
+  }
+  const sugSettle = settleAt2nd(sug, g);
+  return { ...row, catKey: cat, a, rule, listing, group, others, low, diff, pct: low ? diff / low.price : null,
+    rank: low ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: sug - row.price, verdict, vcls, be,
+    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther };
 }
 
 // ---------- 렌더: 비교 ----------
+const link = (cat, it, text) => `<a href="${danawaUrl(cat, it.code)}" target="_blank" rel="noopener" title="다나와에서 보기">${esc(text ?? it.name)}</a>`;
 function renderCompare() {
   if (!Object.keys(state.db).length) return;
   $('#compare').hidden = false;
   const f = $('#cat-filter').value, onlyUp = $('#only-expensive').checked;
-  const all = state.rows.map(analyze);
-  const list = all.filter((a) => (!f || CATS[a.catKey].excel === f) && (!onlyUp || a.diff > 0));
+  const matched = state.rows.map(matchRow);
+  const ownCodes = new Set(matched.filter((m) => m.listing).map((m) => m.listing.code));
+  state.results = matched.map((m) => analyze(m, ownCodes));
+  state.ownCodes = ownCodes;
+  const list = state.results.filter((a) => (!f || CATS[a.catKey].excel === f) && (!onlyUp || a.diff > 0));
   const tb = $('#compare-table tbody');
   tb.innerHTML = list.map((a, i) => {
     const cls = a.diff > 0 ? 'up' : a.diff < 0 ? 'down' : '';
-    const low = a.low ? `${won(a.low.price)}<div class="spec">${esc(a.low.name)}</div>` : '<span class="muted">동일스펙 없음</span>';
-    const miss = !a.key ? '<span class="err">스펙 판별 불가</span>' : esc(a.key);
-    return `<tr data-i="${i}">
+    const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
+    const shared = a.listing && !a.listing.own && SHARED_BRAND.test(a.brand + ' ' + a.model);
+    const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지 (타 판매처 포함)</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
+    const low = a.low ? `${won(a.low.price)}<div class="spec">${link(a.catKey, a.low)}${a.sameOther && a.low.code === a.listing.code ? ' <span class="tag">동일상품</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
+    const rule = a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>';
+    const sugNote = a.verdict === '손실·보류' ? `<div class="spec">손익분기 ${won(a.be)}</div>` : a.sugDiff ? `<div class="spec">${signed(a.sugDiff)}</div>` : '';
+    return `<tr>
       <td class="center">${esc(CATS[a.catKey].label)}</td>
-      <td class="name">${esc(a.model)}${a.listing ? ` <a class="tag" href="${danawaUrl(a.catKey, a.listing.code)}" target="_blank" rel="noopener">다나와</a>` : ''}</td>
-      <td class="left nowrap">${miss}</td>
+      <td class="name">${model}</td>
+      <td class="left rule">${rule}</td>
       <td><b>${won(a.price)}</b></td>
-      <td class="name" style="min-width:200px;text-align:right">${low}</td>
-      <td class="${cls}">${a.diff == null ? '-' : signed(a.diff)}</td>
-      <td class="${cls}">${a.pct == null ? '-' : (a.pct > 0 ? '+' : '') + (a.pct * 100).toFixed(1) + '%'}</td>
+      <td>${dnw}</td>
+      <td class="name lowcol">${low}</td>
+      <td class="${cls}">${a.diff == null ? '-' : signed(a.diff)}<div class="spec">${pctTxt(a.pct)}</div></td>
       <td class="center">${a.rank ? `${a.rank} / ${a.total}` : '-'}</td>
+      <td class="sug"><b>${won(a.sug)}</b>${sugNote}</td>
+      <td class="center"><span class="badge ${a.vcls}">${a.verdict}</span></td>
+      <td>${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div></td>
       <td class="center">${a.group.length ? `<button type="button" class="ghost" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : ''}</td>
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
-  }).join('') || '<tr><td colspan="9" class="center muted">표시할 모델이 없습니다</td></tr>';
+  }).join('') || '<tr><td colspan="12" class="center muted">표시할 모델이 없습니다</td></tr>';
   tb.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
     const a = list[+b.dataset.open]; state.openRow = state.openRow === a.model ? null : a.model; renderCompare();
   }));
 
-  const withLow = all.filter((a) => a.low);
-  const up = withLow.filter((a) => a.diff > 0).length, down = withLow.filter((a) => a.diff < 0).length, eq = withLow.length - up - down;
+  const all = state.results, cnt = (v) => all.filter((a) => a.verdict === v).length;
   $('#summary').innerHTML = `
     <div class="tile"><b>${all.length}</b><span>엑셀 모델</span></div>
-    <div class="tile"><b class="up">${up}</b><span>최저가보다 비쌈</span></div>
-    <div class="tile"><b class="down">${down}</b><span>최저가보다 쌈</span></div>
-    <div class="tile"><b>${eq}</b><span>최저가와 같음</span></div>
-    <div class="tile"><b>${all.length - withLow.length}</b><span>비교 대상 없음</span></div>`;
+    <div class="tile"><b class="down">${cnt('인하')}</b><span>인하 제안</span></div>
+    <div class="tile"><b class="up">${cnt('인상')}</b><span>인상 제안</span></div>
+    <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지 (−0.5~−1%)</span></div>
+    <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
+    <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
+  $('#copy-box').value = all.map((a) => a.sug).join('\n');
 }
 
 function detailRow(a) {
   const rows = a.group.map((it, i) => {
-    const own = it.own || (a.listing && it.code === a.listing.code);
+    const same = a.sameOther && it.code === a.listing.code;
+    const mine = it.own || (state.ownCodes.has(it.code) && !same);
+    const ok = !mine && a.rule.test(it.a);
     const d = a.price - it.price;
-    return `<tr class="${own ? 'own' : ''}"><td class="center">${i + 1}</td>
-      <td class="name"><a href="${danawaUrl(a.catKey, it.code)}" target="_blank" rel="noopener">${esc(it.name)}</a>${own ? '<span class="tag own">자사</span>' : ''}</td>
+    return `<tr class="${mine ? 'own' : ok ? '' : 'dim'}"><td class="center">${i + 1}</td>
+      <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}</td>
+      <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
       <td>${won(it.price)}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
   }).join('');
-  return `<tr class="detail"><td colspan="9"><table class="grid"><thead><tr><th>#</th><th class="left">동일스펙 상품 (${esc(a.key)})</th><th>다나와 최저가</th><th>우리 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
+  return `<tr class="detail"><td colspan="12"><div class="spec" style="margin-bottom:6px">경쟁 조건: <b>${esc(a.rule.label)}</b> · 회색 = 조건 밖(기본 스펙만 같음)</div>
+    <table class="grid"><thead><tr><th>#</th><th class="left">${esc(a.a.base)} 전체 상품</th><th class="left">스펙</th><th>다나와 최저가</th><th>엑셀 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
 }
-
+function specSummary(cat, a) {
+  if (cat === 'gpu') return [a.fans ? a.fans + '팬' : '', a.led ? 'LED' : ''].filter(Boolean).join(' · ');
+  if (cat === 'ssd') return [a.nand, a.dram ? 'DRAM' : 'DRAM없음', a.read ? `${a.read.toLocaleString()}/${a.write.toLocaleString()}` : '', a.warranty ? a.warranty + '년' : ''].filter(Boolean).join(' · ');
+  return [a.cl ? 'CL' + a.cl : '', a.rgb ? 'RGB' : ''].filter(Boolean).join(' · ');
+}
 function danawaUrl(cat, code) { return `https://prod.danawa.com/info/?pcode=${encodeURIComponent(code)}&cate=${CATS[cat].cate}`; }
+
+// ---------- 복사 ----------
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = $('#copy-box'); t.value = text; t.select(); document.execCommand('copy'); }
+  const o = btn.textContent; btn.textContent = '복사됨 ✓'; setTimeout(() => (btn.textContent = o), 1500);
+}
 
 // ---------- 렌더: 동일스펙 가격표 ----------
 function renderBrowseSpecs() {
@@ -278,12 +394,12 @@ function renderBrowse() {
   const g = d.groups[$('#b-spec').value] || [];
   const q = norm($('#b-search').value);
   const min = g.length ? g[0].price : 0;
-  const tb = $('#browse-table tbody');
-  tb.innerHTML = g.filter((it) => !q || norm(it.name).includes(q)).map((it, i) => `
+  $('#browse-table tbody').innerHTML = g.filter((it) => !q || norm(it.name).includes(q)).map((it, i) => `
     <tr class="${it.own ? 'own' : ''}"><td class="center">${i + 1}</td>
-      <td class="name"><a href="${danawaUrl(cat, it.code)}" target="_blank" rel="noopener">${esc(it.name)}</a>${it.own ? '<span class="tag own">자사</span>' : ''}</td>
+      <td class="name">${link(cat, it)}${it.own ? '<span class="tag own">자사</span>' : ''}</td>
+      <td class="left spec">${esc(specSummary(cat, it.a))}</td>
       <td>${won(it.price)}</td><td class="${it.price > min ? 'up' : ''}">${it.price > min ? signed(it.price - min) : '최저'}</td>
-      <td class="muted">${won(it.week)}</td><td class="center muted">${esc(it.sp.registration_month || '')}</td></tr>`).join('')
+      <td class="center muted">${esc(it.sp.registration_month || '')}</td></tr>`).join('')
     || '<tr><td colspan="6" class="center muted">상품이 없습니다</td></tr>';
 }
 
@@ -295,8 +411,10 @@ input.addEventListener('change', () => input.files[0] && readExcel(input.files[0
 drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (f) readExcel(f); });
 $('#cat-filter').addEventListener('change', renderCompare);
 $('#only-expensive').addEventListener('change', renderCompare);
+$('#copy-sug').addEventListener('click', (e) => copyText(state.results.map((a) => a.sug).join('\n'), e.currentTarget));
+$('#copy-sug-name').addEventListener('click', (e) => copyText(state.results.map((a) => `${a.model}\t${a.sug}`).join('\n'), e.currentTarget));
 $('#clear').addEventListener('click', () => {
-  state.rows = []; state.openRow = null; input.value = '';
+  state.rows = []; state.results = []; state.openRow = null; input.value = '';
   $('#compare').hidden = true; $('#file-status').textContent = '엑셀은 이 브라우저 안에서만 읽고, 어디에도 전송·저장하지 않습니다.';
 });
 $('#b-cat').addEventListener('change', renderBrowseSpecs);
