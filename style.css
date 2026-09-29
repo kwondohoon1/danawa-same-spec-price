@@ -20,7 +20,7 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Pretendard", "맑은 고딕", "Malgun Gothic", system-ui, sans-serif; }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+.wrap { max-width: 1480px; margin: 0 auto; padding: 0 16px; }
 .top { background: var(--head); color: #fff; padding: 18px 0 14px; }
 .top h1 { margin: 0; font-size: 20px; }
 .top .sub { margin: 2px 0 0; opacity: .75; font-size: 13px; }
@@ -65,19 +65,32 @@ table.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
 tr.detail > td { background: color-mix(in srgb, var(--head) 4%, var(--card)); padding: 8px 12px 12px; }
 tr.detail table { width: 100%; }
 .foot { font-size: 12px; margin: 8px 0 32px; }
-.copy-row { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-.copy-row span { display: block; font-size: 12px; }
-.copy-row em { font-style: normal; font-weight: 600; color: var(--text); }
-.copy-row textarea { grid-column: 1 / -1; width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); padding: 6px 8px; resize: vertical; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.grid td.rule { white-space: normal; min-width: 180px; font-size: 12px; }
-.grid td.lowcol { min-width: 220px; text-align: right; }
-.grid td.sug { background: color-mix(in srgb, var(--accent) 8%, transparent); user-select: all; }
+.hint { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+.hint em { font-style: normal; font-weight: 600; color: var(--text); }
+kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--card); color: var(--text); }
+.toast { margin-left: 8px; color: var(--down); font-weight: 600; }
 .grid tr.dim td { opacity: .5; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; border: 1px solid currentColor; }
+.badge { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; font-weight: 600; border: 1px solid currentColor; margin-top: 2px; }
 .ok { color: var(--accent); }
 .warn { color: #c77700; }
-@media (max-width: 640px) { .copy-row { grid-template-columns: 1fr; } }
+
+/* 엑셀형 비교표: 가로 스크롤 없이 폭에 맞춤 + 셀 범위 선택 */
+table.xl { table-layout: fixed; }
+table.xl col.c-model { width: 30%; }
+table.xl col.c-low { width: 18%; }
+table.xl th, table.xl td { white-space: normal; overflow-wrap: anywhere; }
+table.xl thead th[data-c] { cursor: s-resize; user-select: none; }
+table.xl thead th[data-c]:hover { background: color-mix(in srgb, var(--accent) 18%, var(--card)); }
+table.xl tbody tr[data-r] td { user-select: none; cursor: cell; }
+table.xl tbody td.sel { background: color-mix(in srgb, var(--accent) 16%, var(--card)) !important; box-shadow: inset 0 0 0 1px var(--accent); }
+table.xl td.sugc { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+table.xl .mtop { display: flex; gap: 6px; align-items: baseline; }
+table.xl .cat { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+table.xl .open { margin-left: auto; padding: 0 8px; font-size: 12px; white-space: nowrap; flex: none; }
+table.xl .rule { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 900px) {
+  table.xl { table-layout: auto; min-width: 820px; }
+}
 @media (max-width: 640px) {
   .grid td.name { min-width: 200px; }
   input[type=search] { min-width: 0; width: 100%; }

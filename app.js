@@ -10,7 +10,7 @@ const CATS = {
 };
 const OWN_SELLER = /한성컴퓨터/;          // 다나와 상품명에 붙는 자사 유통사 표기
 const EXCLUDE = /중고|해외구매|리퍼|벌크/;
-const SHARED_BRAND = /삼성/;               // 여러 판매처가 같은 상품을 파는 브랜드 → 동일상품 타 판매처도 경쟁에 포함
+const SHARED_BRAND = /삼성/;               // 여러 판매처가 파는 브랜드 → 경쟁모델 대신 같은 모델의 다나와 최저가만 사용
 const TARGET = 0.99;                     // 제안가 = 경쟁 최저가 × 99% (1% 낮게)
 const KEEP_HI = 0.995;                   // 경쟁가 대비 -0.5% ~ -1% 이면 유지
 
@@ -271,12 +271,14 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const a = listing ? { ...listing.a } : nameA;
   if (cat === 'gpu') { a.led = a.led || nameA.led; a.fans = a.fans || nameA.fans; }
   if (cat === 'ram') { a.rgb = a.rgb || nameA.rgb; a.cl = a.cl || nameA.cl; }
-  const rule = a.base ? makeRule(cat, a) : null;
   const group = (d && a.base && d.groups[a.base]) || [];
-  // 엑셀에 있는 자사 모델의 다나와 상품은 경쟁에서 제외.
-  // 단, 여러 판매처가 파는 브랜드(삼성 등)는 같은 상품이 우리보다 싸면 타 판매처로 보고 포함
-  const sameOther = !!(listing && !listing.own && SHARED_BRAND.test(row.brand + ' ' + row.model) && listing.price < row.price);
-  const others = group.filter((it) => !it.own && rule.test(it.a) && (!ownCodes.has(it.code) || (sameOther && it.code === listing.code)));
+  // 여러 판매처가 파는 브랜드(삼성 등): 경쟁모델 없이 같은 모델의 다나와 최저가만 비교
+  const sameOther = !!(listing && !listing.own && SHARED_BRAND.test(row.brand + ' ' + row.model));
+  const rule = sameOther ? { label: '동일모델 다나와 최저가 (경쟁모델 제외)', test: (b) => b === listing.a }
+    : a.base ? makeRule(cat, a) : null;
+  // 그 외: 엑셀에 있는 자사 모델의 다나와 상품은 경쟁에서 제외
+  const others = sameOther ? [listing]
+    : group.filter((it) => !it.own && rule.test(it.a) && !ownCodes.has(it.code));
   const low = others[0] || null;
   const diff = low ? row.price - low.price : null;
   const cheaper = others.filter((it) => it.price < row.price).length;
@@ -312,30 +314,29 @@ function renderCompare() {
   state.results = matched.map((m) => analyze(m, ownCodes));
   state.ownCodes = ownCodes;
   const list = state.results.filter((a) => (!f || CATS[a.catKey].excel === f) && (!onlyUp || a.diff > 0));
+  state.list = list; state.sel = null;
   const tb = $('#compare-table tbody');
+  // data-v = 복사될 원본 값 (숫자는 쉼표 없이)
+  const td = (c, v, html, cls = '') => `<td data-c="${c}" data-v="${esc(v ?? '')}" class="${cls}">${html}</td>`;
   tb.innerHTML = list.map((a, i) => {
     const cls = a.diff > 0 ? 'up' : a.diff < 0 ? 'down' : '';
     const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
-    const shared = a.listing && !a.listing.own && SHARED_BRAND.test(a.brand + ' ' + a.model);
-    const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지 (타 판매처 포함)</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
-    const low = a.low ? `${won(a.low.price)}<div class="spec">${link(a.catKey, a.low)}${a.sameOther && a.low.code === a.listing.code ? ' <span class="tag">동일상품</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
+    const shared = a.sameOther;
+    const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
+    const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
     const rule = a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>';
-    const sugNote = a.verdict === '손실·보류' ? `<div class="spec">손익분기 ${won(a.be)}</div>` : a.sugDiff ? `<div class="spec">${signed(a.sugDiff)}</div>` : '';
-    return `<tr>
-      <td class="center">${esc(CATS[a.catKey].label)}</td>
-      <td class="name">${model}</td>
-      <td class="left rule">${rule}</td>
-      <td><b>${won(a.price)}</b></td>
-      <td>${dnw}</td>
-      <td class="name lowcol">${low}</td>
-      <td class="${cls}">${a.diff == null ? '-' : signed(a.diff)}<div class="spec">${pctTxt(a.pct)}</div></td>
-      <td class="center">${a.rank ? `${a.rank} / ${a.total}` : '-'}</td>
-      <td class="sug"><b>${won(a.sug)}</b>${sugNote}</td>
-      <td class="center"><span class="badge ${a.vcls}">${a.verdict}</span></td>
-      <td>${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div></td>
-      <td class="center">${a.group.length ? `<button type="button" class="ghost" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : ''}</td>
+    const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
+    const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
+    return `<tr data-r="${i}">
+      ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span><span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
+      ${td(1, a.price, `<b>${won(a.price)}</b>`)}
+      ${td(2, a.listing ? a.listing.price : '', dnw)}
+      ${td(3, a.low ? a.low.price : '', low)}
+      ${td(4, a.diff ?? '', `<span class="${cls}">${a.diff == null ? '-' : signed(a.diff)}</span><div class="spec">${pctTxt(a.pct)}${a.rank ? ` · ${a.rank}/${a.total}위` : ''}</div>`)}
+      ${td(5, a.sug, `<b>${won(a.sug)}</b>${sugNote}<div><span class="badge ${a.vcls}">${a.verdict}</span></div>`, 'sugc')}
+      ${td(6, Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
-  }).join('') || '<tr><td colspan="12" class="center muted">표시할 모델이 없습니다</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="center muted">표시할 모델이 없습니다</td></tr>';
   tb.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
     const a = list[+b.dataset.open]; state.openRow = state.openRow === a.model ? null : a.model; renderCompare();
   }));
@@ -348,7 +349,6 @@ function renderCompare() {
     <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지 (−0.5~−1%)</span></div>
     <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
     <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
-  $('#copy-box').value = all.map((a) => a.sug).join('\n');
 }
 
 function detailRow(a) {
@@ -362,7 +362,7 @@ function detailRow(a) {
       <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
       <td>${won(it.price)}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
   }).join('');
-  return `<tr class="detail"><td colspan="12"><div class="spec" style="margin-bottom:6px">경쟁 조건: <b>${esc(a.rule.label)}</b> · 회색 = 조건 밖(기본 스펙만 같음)</div>
+  return `<tr class="detail"><td colspan="7"><div class="spec" style="margin-bottom:6px">경쟁 조건: <b>${esc(a.rule.label)}</b> · 회색 = 조건 밖(기본 스펙만 같음)</div>
     <table class="grid"><thead><tr><th>#</th><th class="left">${esc(a.a.base)} 전체 상품</th><th class="left">스펙</th><th>다나와 최저가</th><th>엑셀 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
 }
 function specSummary(cat, a) {
@@ -372,11 +372,62 @@ function specSummary(cat, a) {
 }
 function danawaUrl(cat, code) { return `https://prod.danawa.com/info/?pcode=${encodeURIComponent(code)}&cate=${CATS[cat].cate}`; }
 
-// ---------- 복사 ----------
-async function copyText(text, btn) {
-  try { await navigator.clipboard.writeText(text); }
-  catch { const t = $('#copy-box'); t.value = text; t.select(); document.execCommand('copy'); }
-  const o = btn.textContent; btn.textContent = '복사됨 ✓'; setTimeout(() => (btn.textContent = o), 1500);
+// ---------- 엑셀형 셀 선택 · 복사 ----------
+const table = () => $('#compare-table');
+function paintSel() {
+  const s = state.sel;
+  table().querySelectorAll('td.sel').forEach((el) => el.classList.remove('sel'));
+  if (!s) return;
+  const [r0, r1] = [Math.min(s.r0, s.r1), Math.max(s.r0, s.r1)], [c0, c1] = [Math.min(s.c0, s.c1), Math.max(s.c0, s.c1)];
+  table().querySelectorAll('tbody tr[data-r]').forEach((tr) => {
+    const r = +tr.dataset.r; if (r < r0 || r > r1) return;
+    tr.querySelectorAll('td[data-c]').forEach((el) => { const c = +el.dataset.c; if (c >= c0 && c <= c1) el.classList.add('sel'); });
+  });
+}
+function selTSV() {
+  const s = state.sel; if (!s) return '';
+  const [r0, r1] = [Math.min(s.r0, s.r1), Math.max(s.r0, s.r1)], [c0, c1] = [Math.min(s.c0, s.c1), Math.max(s.c0, s.c1)];
+  const lines = [];
+  table().querySelectorAll('tbody tr[data-r]').forEach((tr) => {
+    const r = +tr.dataset.r; if (r < r0 || r > r1) return;
+    const cells = [...tr.querySelectorAll('td[data-c]')].filter((el) => +el.dataset.c >= c0 && +el.dataset.c <= c1);
+    lines.push(cells.map((el) => el.dataset.v).join('\t'));
+  });
+  return lines.join('\n');
+}
+function toast(msg) { const t = $('#copy-toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 1800); }
+function setupSelection() {
+  const tb = table().tBodies[0];
+  let drag = false;
+  const cellOf = (el) => { const td = el.closest('td[data-c]'), tr = el.closest('tr[data-r]'); return td && tr ? { r: +tr.dataset.r, c: +td.dataset.c } : null; };
+  tb.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    const p = cellOf(e.target); if (!p) return;
+    e.preventDefault();
+    if (e.shiftKey && state.sel) { state.sel.r1 = p.r; state.sel.c1 = p.c; }
+    else state.sel = { r0: p.r, c0: p.c, r1: p.r, c1: p.c };
+    drag = true; paintSel();
+  });
+  tb.addEventListener('mouseover', (e) => {
+    if (!drag) return; const p = cellOf(e.target); if (!p) return;
+    state.sel.r1 = p.r; state.sel.c1 = p.c; paintSel();
+  });
+  document.addEventListener('mouseup', () => (drag = false));
+  // 열 제목 클릭 = 열 전체 선택 (Shift = 여러 열)
+  table().tHead.addEventListener('click', (e) => {
+    const th = e.target.closest('th[data-c]'); if (!th || !state.list?.length) return;
+    const c = +th.dataset.c, last = state.list.length - 1;
+    state.sel = e.shiftKey && state.sel ? { ...state.sel, r0: 0, r1: last, c1: c } : { r0: 0, r1: last, c0: c, c1: c };
+    paintSel();
+  });
+  document.addEventListener('mousedown', (e) => { if (!e.target.closest('#compare-table')) { state.sel = null; paintSel(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { state.sel = null; paintSel(); } });
+  document.addEventListener('copy', (e) => {
+    if (!state.sel || window.getSelection().toString()) return;
+    const text = selTSV(); if (!text) return;
+    e.clipboardData.setData('text/plain', text); e.preventDefault();
+    toast(`복사됨 ✓ ${text.split('\n').length}행`);
+  });
 }
 
 // ---------- 렌더: 동일스펙 가격표 ----------
@@ -411,8 +462,7 @@ input.addEventListener('change', () => input.files[0] && readExcel(input.files[0
 drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (f) readExcel(f); });
 $('#cat-filter').addEventListener('change', renderCompare);
 $('#only-expensive').addEventListener('change', renderCompare);
-$('#copy-sug').addEventListener('click', (e) => copyText(state.results.map((a) => a.sug).join('\n'), e.currentTarget));
-$('#copy-sug-name').addEventListener('click', (e) => copyText(state.results.map((a) => `${a.model}\t${a.sug}`).join('\n'), e.currentTarget));
+setupSelection();
 $('#clear').addEventListener('click', () => {
   state.rows = []; state.results = []; state.openRow = null; input.value = '';
   $('#compare').hidden = true; $('#file-status').textContent = '엑셀은 이 브라우저 안에서만 읽고, 어디에도 전송·저장하지 않습니다.';

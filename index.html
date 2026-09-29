@@ -45,33 +45,21 @@
         </div>
       </div>
       <div class="summary" id="summary"></div>
-      <div class="copy-row">
-        <div>
-          <b>제안 노출가 (2차혜택가)</b>
-          <span class="muted">엑셀 행 순서 그대로 한 줄에 하나씩 · <em>정산가세팅</em> 입력가(E18)에 붙여넣기</span>
-        </div>
-        <div class="controls">
-          <button type="button" id="copy-sug" class="primary">제안 노출가 복사</button>
-          <button type="button" id="copy-sug-name" class="ghost">모델명 + 제안가 복사</button>
-        </div>
-        <textarea id="copy-box" readonly rows="3" aria-label="제안 노출가 목록"></textarea>
-      </div>
+      <p class="hint">엑셀처럼 <b>셀을 드래그</b>하거나 <b>열 제목을 클릭</b>해 선택한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd> → 엑셀에 붙여넣기. 숫자는 쉼표 없이 복사됩니다.
+        제안 노출가 열 전체를 복사해 <em>정산가세팅</em> 입력가(E18)에 붙여넣으면 행 순서가 그대로 맞습니다. 상품명을 누르면 다나와로 이동합니다.
+        <span id="copy-toast" class="toast" hidden></span></p>
       <div class="table-scroll">
-        <table class="grid" id="compare-table">
+        <table class="grid xl" id="compare-table">
+          <colgroup><col class="c-model"><col><col><col class="c-low"><col><col><col></colgroup>
           <thead>
             <tr>
-              <th>카테고리</th>
-              <th class="left">모델명 <small>(클릭 → 다나와)</small></th>
-              <th class="left">경쟁 조건 (같거나 좋은 스펙)</th>
-              <th>엑셀 노출가<br><small>(2차혜택가)</small></th>
-              <th>다나와 노출가<br><small>(우리 상품)</small></th>
-              <th>동일스펙 최저가 <small>(클릭 → 다나와)</small></th>
-              <th>차이</th>
-              <th>순위</th>
-              <th>제안 노출가<br><small>(최저가 −1%)</small></th>
-              <th>판단</th>
-              <th>제안 시 정산가<br><small>(G마켓)</small></th>
-              <th></th>
+              <th class="left" data-c="0">모델명 · 경쟁 조건</th>
+              <th data-c="1">엑셀 노출가<br><small>(2차혜택가)</small></th>
+              <th data-c="2">다나와 노출가<br><small>(우리 상품)</small></th>
+              <th data-c="3">동일스펙 최저가</th>
+              <th data-c="4">차이<br><small>· 순위</small></th>
+              <th data-c="5">제안 노출가<br><small>(최저가 −1%)</small></th>
+              <th data-c="6">제안 시 정산가<br><small>(G마켓 · 마진)</small></th>
             </tr>
           </thead>
           <tbody></tbody>
