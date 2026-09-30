@@ -458,41 +458,93 @@ function specSummary(cat, a) {
 function danawaUrl(cat, code) { return `https://prod.danawa.com/info/?pcode=${encodeURIComponent(code)}&cate=${CATS[cat].cate}`; }
 
 // ---------- 엑셀로 받기 ----------
-// 단가표_마켓코드 '최저가비교' 시트 양식 그대로: 1행 날짜, 2행 구분, 3행 제목, 4행부터 정산가세팅 순서
-function exportXlsx() {
-  if (!state.results.length) return;
+// 단가표 '최저가비교' 시트 양식: 1행 날짜, 2행 구분, 3행 제목, 4행부터 정산가세팅 순서 (ExcelJS 로 색·서식 포함)
+const XL = {
+  cols: [
+    ['다나와코드', 11], ['상품명', 50],
+    ['노출가', 11], ['최대혜택가', 11], ['원가', 11], ['마진', 10], ['마진율', 8],
+    ['노출가', 11], ['최대혜택가', 11], ['원가', 11], ['마진', 10], ['마진율', 8],
+    ['다나와코드', 11], ['상품명', 46], ['노출가', 11], ['가격차이', 10], ['상품 URL', 22], ['필터 URL', 22],
+    ['판정', 9],
+  ],
+  // [시작열, 끝열, 제목, 구분색, 제목행색]
+  groups: [[1, 2, '', 'D9D9D9', 'F2F2F2'], [3, 7, '현재세팅', '9BC2E6', 'DDEBF7'], [8, 12, '제안세팅', 'A9D08E', 'E2EFDA'],
+    [13, 18, '가격비교', 'F4B084', 'FCE4D6'], [19, 19, '', 'D9D9D9', 'F2F2F2']],
+  money: [3, 4, 5, 6, 8, 9, 10, 11, 15], pct: [7, 12], links: [1, 13, 17, 18],
+};
+const fillOf = (rgb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + rgb } });
+const thin = (rgb) => { const s = { style: 'thin', color: { argb: 'FF' + rgb } }; return { top: s, left: s, bottom: s, right: s }; };
+
+function buildExportWorkbook() {
   const R = Math.round;
   const now = new Date(Date.now() + 9 * 3600 * 1000).toISOString();
   const when = state.collectedAt ? `${state.collectedAt.slice(0, 10)} ${state.collectedAt.slice(11, 16)}` : '';
-  const aoa = [
-    [now.slice(0, 10), when ? `다나와 ${when} 수집 기준 · 배송비 미포함` : ''],
-    ['', '', '현재세팅', '', '', '', '제안세팅', '', '', '', '가격비교'],
-    ['다나와코드', '상품명', '노출가', '최대혜택가', '원가', '마진', '노출가', '최대혜택가', '원가', '마진', '다나와코드', '상품명', '노출가', '가격차이', 'URL'],
-  ];
-  const links = [];
-  state.results.forEach((a, i) => {
-    const r = 3 + i, low = a.low;
-    aoa.push([
-      a.listing ? a.listing.code : '', a.model,
-      a.price, R(a.curMax), a.cost ?? '', a.cost ? R(a.curSettle - a.cost) : '',
-      a.sug, R(a.sugMax), a.cost ?? '', a.cost ? R(a.sugSettle - a.cost) : '',
-      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? a.price - low.price : '',
-      a.filterUrl,
-    ]);
-    if (a.listing) links.push([r, 0, danawaUrl(a.catKey, a.listing.code)]);
-    if (low) links.push([r, 10, danawaUrl(a.catKey, low.code)]);
-    links.push([r, 14, a.filterUrl]);
-  });
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 1 } }, { s: { r: 1, c: 2 }, e: { r: 1, c: 5 } }, { s: { r: 1, c: 6 }, e: { r: 1, c: 9 } }, { s: { r: 1, c: 10 }, e: { r: 1, c: 14 } }];
-  ws['!cols'] = [11, 76, 11, 11, 11, 11, 11, 11, 11, 11, 11, 60, 11, 11, 56].map((wch) => ({ wch }));
-  for (const [r, c, url] of links) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell) cell.l = { Target: url }; }
-  for (let r = 3; r < aoa.length; r++) for (const c of [2, 3, 4, 5, 6, 7, 8, 9, 12, 13]) {
-    const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '#,##0';
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('최저가비교', { views: [{ state: 'frozen', xSplit: 2, ySplit: 3 }] });
+  const font = { name: '맑은 고딕', size: 10 };
+  ws.columns = XL.cols.map(([, width]) => ({ width }));
+
+  ws.getCell('A1').value = now.slice(0, 10);
+  ws.getCell('A1').font = { ...font, bold: true };
+  ws.getCell('B1').value = when ? `다나와 ${when} 수집 기준 · 배송비 미포함 · 노란색 = 인하 필요` : '노란색 = 인하 필요';
+  ws.getCell('B1').font = { ...font, color: { argb: 'FF808080' } };
+
+  for (const [c1, c2, title, g, h] of XL.groups) {
+    if (c2 > c1) ws.mergeCells(2, c1, 2, c2);
+    const top = ws.getCell(2, c1);
+    top.value = title; top.fill = fillOf(g); top.font = { ...font, bold: true }; top.alignment = { horizontal: 'center', vertical: 'middle' };
+    for (let c = c1; c <= c2; c++) {
+      ws.getCell(2, c).border = thin('A6A6A6');
+      const hc = ws.getCell(3, c);
+      hc.value = XL.cols[c - 1][0]; hc.fill = fillOf(h); hc.font = { ...font, bold: true };
+      hc.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; hc.border = thin('A6A6A6');
+    }
   }
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '최저가비교');
-  XLSX.writeFile(wb, `최저가비교_${now.slice(0, 10).replace(/-/g, '')}_${now.slice(11, 16).replace(':', '')}.xlsx`);
+  ws.getRow(2).height = 20; ws.getRow(3).height = 20;
+
+  state.results.forEach((a, i) => {
+    const r = 4 + i, low = a.low, cost = a.cost || null;
+    const curM = cost ? a.curSettle - cost : null, sugM = cost ? a.sugSettle - cost : null;
+    const lowUrl = low ? danawaUrl(a.catKey, low.code) : '';
+    const vals = [
+      a.listing ? a.listing.code : '', a.model,
+      a.price, R(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
+      a.sug, R(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
+      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? a.price - low.price : '', lowUrl, a.filterUrl,
+      a.verdict,
+    ];
+    const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 17: lowUrl, 18: a.filterUrl };
+    const cut = a.verdict === '인하';
+    vals.forEach((v, j) => {
+      const c = j + 1, cell = ws.getCell(r, c);
+      cell.value = urls[c] && v !== '' ? { text: String(v), hyperlink: urls[c] } : v;
+      cell.font = { ...font };
+      cell.border = thin('D9D9D9');
+      cell.alignment = [1, 13, 19].includes(c) ? { vertical: 'middle', horizontal: 'center' } : { vertical: 'middle' };
+      if (XL.money.includes(c)) cell.numFmt = '#,##0';
+      if (XL.pct.includes(c)) cell.numFmt = '0.0%';
+      if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
+      if ((c === 6 || c === 7 || c === 11 || c === 12) && typeof v === 'number' && v < 0) cell.font = { ...font, color: { argb: 'FFC00000' } };
+      if (c === 16 && typeof v === 'number') {
+        cell.numFmt = '+#,##0;-#,##0;0';
+        if (v) cell.font = { ...font, bold: true, color: { argb: v > 0 ? 'FFC00000' : 'FF0070C0' } }; // 우리가 비싸면 빨강, 싸면 파랑
+      }
+      if (cut && c >= 8 && c <= 12) cell.fill = fillOf('FFFF00');                                   // 인하 필요 → 제안세팅 노란색
+    });
+    ws.getCell(r, 8).font = { ...ws.getCell(r, 8).font, bold: true };
+  });
+  return { wb, name: `최저가비교_${now.slice(0, 10).replace(/-/g, '')}_${now.slice(11, 16).replace(':', '')}.xlsx` };
+}
+
+async function exportXlsx() {
+  if (!state.results.length) return;
+  if (!window.ExcelJS) { alert('엑셀 모듈을 불러오지 못했습니다. 새로고침 후 다시 눌러 주세요.'); return; }
+  const { wb, name } = buildExportWorkbook();
+  const buf = await wb.xlsx.writeBuffer();
+  const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 // ---------- 엑셀형 셀 선택 · 복사 ----------
