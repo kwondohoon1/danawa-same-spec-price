@@ -119,6 +119,61 @@ function makeRule(cat, a) {
   return { label: parts.join(' · '), test: (b) => tests.every((t) => t(b)) };
 }
 
+// ---------- 다나와 필터 URL ----------
+// 다나와 목록 '상세검색' 필터 코드 (2026-09-30 기준). 같은 항목 안의 여러 값은 OR, 항목끼리는 AND
+const codeMap = (s) => Object.fromEntries(s.split(',').map((x) => { const i = x.lastIndexOf('='); return [x.slice(0, i).toUpperCase().replace(/\s+/g, ''), x.slice(i + 1)]; }));
+const DNW = {
+  chip: codeMap('RTX 5090=1018234,RTX 5080=1018237,RTX 5070 Ti=1018240,RTX 5070=1018246,RTX 5060 Ti=1035862,RTX 5060=1018243,RTX 5050=1052509,RTX 4080 SUPER=925852,RTX 4070 Ti=823393,RTX 4070 SUPER=925846,RTX 4070=846919,RTX 4060 Ti=863683,RTX 4060=863686,RTX 3090=693490,RTX 3080 Ti=731872,RTX 3080=693451,RTX 3070 Ti=733036,RTX 3070=705349,RTX 3060 Ti=709720,RTX 3060=723391,RTX 3050=761620,GTX 1660 Ti=332302,GTX 1660 SUPER=622280,GTX 1660=338797,GTX 1650 SUPER=624611,GTX 1650=343624,RX 9070 XT=1022905,RX 9070 GRE=1147345,RX 9070=1022908,RX 9060 XT=1050613,RX 9060=1056586,RX 7900 XTX=818815,RX 7800 XT=901393,RX 7700 XT=901396,RX 7600 XT=944461,RX 7600=864124,RX 6900 XT=708859,RX 6800 XT=708862,RX 6800=708865,RX 6700 XT=726172,RX 6600 XT=741613,RX 6600=746104,RX 6500 XT=760483,RX 580=217480'),
+  vram: codeMap('32=306823,24=306820,20=765568,16=188705,12=213322,10=693454,8=188704,6=137546,4=110066'),
+  fans: [[1, '100040'], [2, '100041'], [3, '100042'], [4, '351085']],
+  gddr7: '1018456',
+  ssdIf: { 'PCIe5.0': '859759', 'PCIe4.0': '402191', SATA: '88980' },
+  ssdCap: [[64, '610790'], [128, '610793'], [256, '610811'], [525, '610814'], [1024, '610817'], [2048, '610820'], [4096, '610823'], [8192, '682156'], [19456, '671123'], [1e9, '713191']],
+  ssdRead: [[449, '90174'], [549, '93370'], [1499, '93371'], [2499, '221062'], [3999, '700813'], [5999, '700816'], [7999, '700819'], [11999, '701431'], [1e9, '927916']],
+  ssdWrite: [[499, '90175'], [999, '93368'], [1499, '221067'], [1999, '221066'], [2999, '700822'], [3999, '700825'], [4999, '700828'], [5999, '700831'], [6999, '700834'], [8999, '702262'], [1e9, '927925']],
+  ramGen: { DDR5: '748099', DDR4: '164333', DDR3: '1217' },
+  ramCap: codeMap('128=230128,96=836026,64=157451,48=836023,32=109194,24=109193,16=90210,12=84071,8=1248,4=1246'),
+  ramMods: { 1: '1228', 2: '1229', 4: '1231' },
+  ramSpd: codeMap('8400=978784,8000=816907,7600=807862,7400=927928,7200=807856,7000=814987,6800=807853,6600=776749,6400=756892,6200=755377,6000=755374,5600=749644,5200=748117,4800=748702,4800D4=336316,4000=203452,3600=183447,3200=168792,3000=159636,2933=184392,2666=131762,2400=43870,2133=31641'),
+  ramCl: [[14, '167912'], [15, '164647'], [16, '164473'], [17, '183449'], [18, '195363'], [19, '204922'], [22, '629105'], [26, '1019383'], [28, '804178'], [30, '774730'], [32, '755380'], [34, '749641'], [36, '749920'], [38, '748120'], [40, '748699'], [42, '762271'], [46, '790423'], [48, '844780'], [52, '983833']],
+};
+// 우리 제품 기준 스펙(경쟁 조건)으로 다나와 목록을 거른 URL. OC 여부는 다나와 필터가 없어 제외
+function danawaFilterUrl(cat, a, sameListing) {
+  if (sameListing) return danawaUrl(cat, sameListing.code);
+  const v = [];
+  if (a && a.base && cat === 'gpu') {
+    const [chip, mem] = a.base.split(' · ');
+    const c = DNW.chip[chip.toUpperCase().replace(/\s+/g, '')]; if (c) v.push(c);
+    const m = DNW.vram[parseInt(mem, 10)]; if (m) v.push(m);
+    if (a.fans) DNW.fans.filter(([n]) => n >= a.fans).forEach(([, x]) => v.push(x));
+    if (a.mem === 'D7') v.push(DNW.gddr7);
+  } else if (a && a.base && cat === 'ssd') {
+    const cap = gb(a.base.split(' · ').pop());
+    v.push(...(/^M\.2/.test(a.base) ? ['202347'] : []));
+    const bus = Object.keys(DNW.ssdIf).find((k) => a.base.includes(k)); if (bus) v.push(DNW.ssdIf[bus]);
+    if (cap) v.push(DNW.ssdCap.find(([hi]) => cap <= hi)[1]);
+    if (a.nand === 'TLC' || a.nand === 'MLC') v.push('213319', '86089');
+    if (a.dram) v.push('342157');
+    const r = Math.floor(a.read / 1000) * 1000, w = Math.floor(a.write / 1000) * 1000;
+    if (r) DNW.ssdRead.filter(([hi]) => hi >= r).forEach(([, x]) => v.push(x));
+    if (w) DNW.ssdWrite.filter(([hi]) => hi >= w).forEach(([, x]) => v.push(x));
+    if (a.warranty >= 5) v.push('720838'); else if (a.warranty >= 3) v.push('720838', '720841');
+  } else if (a && a.base && cat === 'ram') {
+    const m = a.base.match(/^(DDR\d)-(\d+) · (\d+)GB \((\d)개\)/);
+    if (m) {
+      v.push('1223', DNW.ramGen[m[1]] || '');
+      const spd = DNW.ramSpd[m[1] === 'DDR4' && m[2] === '4800' ? '4800D4' : m[2]]; if (spd) v.push(spd);
+      if (DNW.ramCap[m[3]]) v.push(DNW.ramCap[m[3]]);
+      if (DNW.ramMods[m[4]]) v.push(DNW.ramMods[m[4]]);
+    }
+    if (a.cl) DNW.ramCl.filter(([n]) => n <= a.cl).forEach(([, x]) => v.push(x));
+    if (a.rgb) v.push('247310');
+  }
+  const list = `https://prod.danawa.com/list/?cate=${CATS[cat].cate}`;
+  const vv = v.filter(Boolean);
+  return vv.length ? `${list}&searchOption=/searchAttributeValue=${vv.join(',')}` : list;
+}
+
 // ---------- 데이터 로드 ----------
 // 가격은 07~18시 매시 갱신되므로 브라우저·CDN 캐시를 건너뛰고 항상 새로 받는다.
 const REFRESH_MS = 5 * 60 * 1000;
@@ -201,20 +256,22 @@ const squash = (v) => String(v ?? '').replace(/\s+/g, '');
 function extractRows(wb) {
   const order = [...wb.SheetNames].sort((a, b) => (b === '정산가세팅') - (a === '정산가세팅'));
   for (const name of order) {
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' });
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: true });
     for (let h = 0; h < Math.min(aoa.length, 60); h++) {
       const head = aoa[h].map(squash);
       const iModel = head.indexOf('모델명');
       const iPrice = head.findIndex((v) => /^노출가\(2차/.test(v));
       if (iModel < 0 || iPrice < 0) continue;
       const col = (t) => head.indexOf(t);
-      const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가');
+      const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가'), iMax = col('최대혜택가');
       const out = [];
       for (let r = h + 1; r < aoa.length; r++) {
         const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
-        if (!model || !(price > 0)) continue;
+        if (!model) break; // 첫 표만 읽는다 (정산가세팅 아래쪽 '자사몰 기준' 표 제외)
+        if (!(price > 0)) continue;
+        const num = (i) => (i >= 0 ? Number(aoa[r][i]) || null : null);
         out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model, price,
-          cost: iCost >= 0 ? Number(aoa[r][iCost]) || null : null, settle: iSettle >= 0 ? Number(aoa[r][iSettle]) || null : null });
+          cost: num(iCost), settle: num(iSettle), maxb: num(iMax) });
       }
       if (out.length) { readGConditions(aoa, h); return out; }
     }
@@ -247,6 +304,7 @@ function gListFrom2nd(O, g) {
   return L1 - 10;
 }
 const settleAt2nd = (O, g) => gSettle(gListFrom2nd(O, g), g);
+const gMaxBenefit = (O, g) => O - Math.min(fl10(O * g.card), O >= g.hi ? g.capH : g.capL); // 2차혜택가 → 최대혜택가
 function breakeven2nd(cost, g) { // 정산가 ≥ 원가가 되는 최소 2차혜택가
   let lo = 0, hi = Math.ceil(cost * 3 / 10) * 10;
   while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gSettle(mid, g) >= cost) hi = mid; else lo = mid; }
@@ -321,9 +379,12 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
     }
   }
   const sugSettle = settleAt2nd(sug, g);
+  const curSettle = row.settle || settleAt2nd(row.price, g);
+  const filterUrl = danawaFilterUrl(cat, a, sameOther ? listing : null);
   return { ...row, catKey: cat, a, rule, listing, group, others, low, diff, pct: low ? diff / low.price : null,
     rank: low ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: sug - row.price, verdict, vcls, be,
-    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther };
+    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl,
+    curMax: row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: gMaxBenefit(sug, g) };
 }
 
 // ---------- 렌더: 비교 ----------
@@ -347,7 +408,8 @@ function renderCompare() {
     const shared = a.sameOther;
     const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
     const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
-    const rule = a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>';
+    const rule = (a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>')
+      + ` <a class="flink" href="${esc(a.filterUrl)}" target="_blank" rel="noopener" title="우리 제품 기준 스펙으로 다나와 목록 필터">다나와 필터 ↗</a>`;
     const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
     const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
     return `<tr data-r="${i}">
@@ -394,6 +456,44 @@ function specSummary(cat, a) {
   return [a.cl ? 'CL' + a.cl : '', a.rgb ? 'RGB' : ''].filter(Boolean).join(' · ');
 }
 function danawaUrl(cat, code) { return `https://prod.danawa.com/info/?pcode=${encodeURIComponent(code)}&cate=${CATS[cat].cate}`; }
+
+// ---------- 엑셀로 받기 ----------
+// 단가표_마켓코드 '최저가비교' 시트 양식 그대로: 1행 날짜, 2행 구분, 3행 제목, 4행부터 정산가세팅 순서
+function exportXlsx() {
+  if (!state.results.length) return;
+  const R = Math.round;
+  const now = new Date(Date.now() + 9 * 3600 * 1000).toISOString();
+  const when = state.collectedAt ? `${state.collectedAt.slice(0, 10)} ${state.collectedAt.slice(11, 16)}` : '';
+  const aoa = [
+    [now.slice(0, 10), when ? `다나와 ${when} 수집 기준 · 배송비 미포함` : ''],
+    ['', '', '현재세팅', '', '', '', '제안세팅', '', '', '', '가격비교'],
+    ['다나와코드', '상품명', '노출가', '최대혜택가', '원가', '마진', '노출가', '최대혜택가', '원가', '마진', '다나와코드', '상품명', '노출가', '가격차이', 'URL'],
+  ];
+  const links = [];
+  state.results.forEach((a, i) => {
+    const r = 3 + i, low = a.low;
+    aoa.push([
+      a.listing ? a.listing.code : '', a.model,
+      a.price, R(a.curMax), a.cost ?? '', a.cost ? R(a.curSettle - a.cost) : '',
+      a.sug, R(a.sugMax), a.cost ?? '', a.cost ? R(a.sugSettle - a.cost) : '',
+      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? a.price - low.price : '',
+      a.filterUrl,
+    ]);
+    if (a.listing) links.push([r, 0, danawaUrl(a.catKey, a.listing.code)]);
+    if (low) links.push([r, 10, danawaUrl(a.catKey, low.code)]);
+    links.push([r, 14, a.filterUrl]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 1 } }, { s: { r: 1, c: 2 }, e: { r: 1, c: 5 } }, { s: { r: 1, c: 6 }, e: { r: 1, c: 9 } }, { s: { r: 1, c: 10 }, e: { r: 1, c: 14 } }];
+  ws['!cols'] = [11, 76, 11, 11, 11, 11, 11, 11, 11, 11, 11, 60, 11, 11, 56].map((wch) => ({ wch }));
+  for (const [r, c, url] of links) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell) cell.l = { Target: url }; }
+  for (let r = 3; r < aoa.length; r++) for (const c of [2, 3, 4, 5, 6, 7, 8, 9, 12, 13]) {
+    const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '#,##0';
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '최저가비교');
+  XLSX.writeFile(wb, `최저가비교_${now.slice(0, 10).replace(/-/g, '')}_${now.slice(11, 16).replace(':', '')}.xlsx`);
+}
 
 // ---------- 엑셀형 셀 선택 · 복사 ----------
 const table = () => $('#compare-table');
@@ -484,6 +584,7 @@ input.addEventListener('change', () => input.files[0] && readExcel(input.files[0
 ['dragleave', 'drop'].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (f) readExcel(f); });
 $('#cat-filter').addEventListener('change', renderCompare);
+$('#export').addEventListener('click', exportXlsx);
 $('#only-expensive').addEventListener('change', renderCompare);
 setupSelection();
 $('#clear').addEventListener('click', () => {

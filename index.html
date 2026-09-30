@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>동일스펙 가격비교</title>
   <meta name="robots" content="noindex">
-  <link rel="stylesheet" href="style.css?v=20260930">
+  <link rel="stylesheet" href="style.css?v=20260930d">
 </head>
 <body>
   <header class="top">
@@ -41,12 +41,14 @@
             <option value="RAM">RAM</option>
           </select>
           <label class="chk"><input type="checkbox" id="only-expensive"> 최저가보다 비싼 것만</label>
+          <button id="export" type="button">엑셀로 받기</button>
           <button id="clear" type="button" class="ghost">엑셀 지우기</button>
         </div>
       </div>
       <div class="summary" id="summary"></div>
       <p class="hint">엑셀처럼 <b>셀을 드래그</b>하거나 <b>열 제목을 클릭</b>해 선택한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd> → 엑셀에 붙여넣기. 숫자는 쉼표 없이 복사됩니다.
         제안 노출가 열 전체를 복사해 <em>정산가세팅</em> 입력가(E18)에 붙여넣으면 행 순서가 그대로 맞습니다. 상품명을 누르면 다나와로 이동합니다.
+        <b>엑셀로 받기</b>는 단가표 <em>최저가비교</em> 시트 양식(A~O열, 4행부터 정산가세팅 순서)으로 내려받습니다. <b>다나와 필터 ↗</b>는 우리 제품 기준 스펙으로 다나와 목록을 거른 링크입니다(열면 낮은가격순을 한 번 눌러 주세요).
         <span id="copy-toast" class="toast" hidden></span></p>
       <div class="table-scroll">
         <table class="grid xl" id="compare-table">
@@ -92,6 +94,6 @@
   </main>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <script src="app.js?v=20260930c"></script>
+  <script src="app.js?v=20260930d"></script>
 </body>
 </html>

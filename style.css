@@ -95,3 +95,5 @@ table.xl .rule { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
   .grid td.name { min-width: 200px; }
   input[type=search] { min-width: 0; width: 100%; }
 }
+
+.flink { font-size: 11px; white-space: nowrap; margin-left: 4px; }
