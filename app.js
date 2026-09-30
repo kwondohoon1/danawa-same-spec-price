@@ -116,8 +116,22 @@ function makeRule(cat, a) {
 }
 
 // ---------- 데이터 로드 ----------
+// 가격은 07~18시 매시 갱신되므로 브라우저·CDN 캐시를 건너뛰고 항상 새로 받는다.
+const REFRESH_MS = 5 * 60 * 1000;
+const get = (u) => fetch(`${u}?t=${Date.now()}`, { cache: 'no-store' })
+  .then((r) => { if (!r.ok) throw new Error(`${u.split('/').pop()} ${r.status}`); return r.text(); });
+
+// 오늘 시간대별 수집 기록에서 가장 최근 수집 시각 (없으면 null)
+async function latestCollectedAt() {
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  try {
+    const m = parseCSV(await get(`${SRC}/hourly/${today}/collected.csv`));
+    const i = m.head.indexOf('collected_at');
+    return m.rows.map((r) => r[i]).filter(Boolean).sort().pop() || null;
+  } catch { return null; }
+}
+
 async function loadCat(cat) {
-  const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(`${u.split('/').pop()} ${r.status}`); return r.text(); });
   const [p, s] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`)]);
   const prices = parseCSV(p), specs = parseCSV(s);
   const dates = prices.head.slice(2);
@@ -143,11 +157,16 @@ async function loadCat(cat) {
 async function loadAll() {
   const st = $('#data-status');
   try {
-    const res = await Promise.all(Object.keys(CATS).map(async (c) => [c, await loadCat(c)]));
+    const [res, at] = await Promise.all([
+      Promise.all(Object.keys(CATS).map(async (c) => [c, await loadCat(c)])),
+      latestCollectedAt(),
+    ]);
     res.forEach(([c, d]) => (state.db[c] = d));
+    state.collectedAt = at;
     const n = res.reduce((a, [, d]) => a + d.items.length, 0);
-    st.innerHTML = `가격 데이터 <b>${res[0][1].today}</b> 기준 · ${n.toLocaleString()}개 상품 불러옴`;
-    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 매일 갱신, 배송비 미포함). 중고·해외구매·리퍼·벌크 제외.`;
+    const when = at ? `${at.slice(0, 10)} ${at.slice(11, 16)}` : res[0][1].today;
+    st.innerHTML = `가격 데이터 <b>${when}</b> 수집 기준 · ${n.toLocaleString()}개 상품 불러옴`;
+    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 07~18시 매시 갱신, 배송비 미포함). 중고·해외구매·리퍼·벌크 제외.`;
     renderBrowseSpecs();
     if (state.rows.length) renderCompare();
   } catch (e) {
@@ -472,3 +491,8 @@ $('#b-spec').addEventListener('change', renderBrowse);
 $('#b-search').addEventListener('input', renderBrowse);
 
 loadAll();
+// 페이지를 열어둔 동안에도 새 시간대 수집이 올라오면 다시 불러온다 (올린 엑셀 비교도 새 가격으로 다시 계산)
+setInterval(async () => {
+  const at = await latestCollectedAt();
+  if (at && at !== state.collectedAt) loadAll();
+}, REFRESH_MS);
