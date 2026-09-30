@@ -104,7 +104,6 @@ function makeRule(cat, a) {
   const parts = [a.base], tests = [];
   if (cat === 'gpu') {
     if (a.fans) { parts.push(`${a.fans}팬 이상`); tests.push((b) => b.fans >= a.fans); }
-    if (a.led) { parts.push('LED'); tests.push((b) => b.led); }
     if (a.oc) { parts.push('OC'); tests.push((b) => b.oc); }                       // OC 모델은 OC끼리만
     if (a.mem === 'D7') { parts.push('D6 제외'); tests.push((b) => b.mem !== 'D6'); } // D7 은 D6 표기만 제외, 표기 없음은 포함
   } else if (cat === 'ssd') {
