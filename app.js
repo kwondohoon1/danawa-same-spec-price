@@ -58,12 +58,15 @@ const years = (s) => { const m = String(s || '').match(/(\d+)\s*년/); return m 
 const fansOf = (s) => { const m = String(s || '').match(/(\d)\s*팬/); return m ? +m[1] : 0; };
 const fansFromName = (n) => (/TRIPLE|3\s*FAN/i.test(n) ? 3 : /DUAL|2\s*FAN/i.test(n) ? 2 : /SINGLE|1\s*FAN/i.test(n) ? 1 : 0);
 const clOf = (s) => { const m = String(s || '').match(/CL\s*(\d+)/i); return m ? +m[1] : 0; };
+// 그래픽카드 이름의 OC 여부와 메모리 표기 (D7 / D6·D6X / 표기 없음)
+const ocOf = (n) => /\bOC\b/i.test(n);
+const memOf = (n) => (/\bG?D(?:DR)?6X?\b/i.test(n) ? 'D6' : /\bG?D(?:DR)?7\b/i.test(n) ? 'D7' : '');
 
 // 상품 속성 (다나와 스펙 → 공통 형태)
 function attrsFromSpec(cat, sp, name) {
   if (cat === 'gpu') {
     const chip = gpuChip(sp.chipset), mem = gb(sp.memory_size);
-    return { base: chip && mem ? `${chip} · ${mem}GB` : '', fans: fansOf(sp.fans) || fansFromName(name), led: /LED 라이트/.test(sp.full_spec || '') || /\bA?RGB\b/i.test(name) };
+    return { base: chip && mem ? `${chip} · ${mem}GB` : '', fans: fansOf(sp.fans) || fansFromName(name), led: /LED 라이트/.test(sp.full_spec || '') || /\bA?RGB\b/i.test(name), oc: ocOf(name), mem: memOf(name) };
   }
   if (cat === 'ssd') {
     const cap = gb(sp.capacity);
@@ -85,7 +88,7 @@ function attrsFromSpec(cat, sp, name) {
 // 엑셀 모델명 → 속성 (다나와 미등록 모델용)
 function attrsFromName(cat, name) {
   const n = norm(name);
-  if (cat === 'gpu') { const c = gpuChip(n), m = gb(n); return { base: c && m ? `${c} · ${m}GB` : '', fans: fansFromName(n), led: /\bA?RGB\b/.test(n) }; }
+  if (cat === 'gpu') { const c = gpuChip(n), m = gb(n); return { base: c && m ? `${c} · ${m}GB` : '', fans: fansFromName(n), led: /\bA?RGB\b/.test(n), oc: ocOf(n), mem: memOf(n) }; }
   if (cat === 'ram') {
     const gen = (n.match(/DDR(\d)/) || n.match(/\bD(\d)-/) || [])[1];
     const spd = (n.match(/(?:DDR\d|D\d)-(\d{4,5})/) || [])[1];
@@ -102,6 +105,8 @@ function makeRule(cat, a) {
   if (cat === 'gpu') {
     if (a.fans) { parts.push(`${a.fans}팬 이상`); tests.push((b) => b.fans >= a.fans); }
     if (a.led) { parts.push('LED'); tests.push((b) => b.led); }
+    if (a.oc) { parts.push('OC'); tests.push((b) => b.oc); }                       // OC 모델은 OC끼리만
+    if (a.mem === 'D7') { parts.push('D6 제외'); tests.push((b) => b.mem !== 'D6'); } // D7 은 D6 표기만 제외, 표기 없음은 포함
   } else if (cat === 'ssd') {
     if (a.nand === 'TLC' || a.nand === 'MLC') { parts.push('TLC 이상'); tests.push((b) => b.nand === 'TLC' || b.nand === 'MLC'); }
     if (a.dram) { parts.push('DRAM'); tests.push((b) => b.dram); }
@@ -288,7 +293,7 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const d = state.db[cat], g = state.g;
   // 속성: 다나와 상품이 있으면 그 스펙, 없으면 모델명. 이름의 RGB/팬 정보는 항상 반영
   const a = listing ? { ...listing.a } : nameA;
-  if (cat === 'gpu') { a.led = a.led || nameA.led; a.fans = a.fans || nameA.fans; }
+  if (cat === 'gpu') { a.led = a.led || nameA.led; a.fans = a.fans || nameA.fans; a.oc = a.oc || nameA.oc; a.mem = a.mem || nameA.mem; }
   if (cat === 'ram') { a.rgb = a.rgb || nameA.rgb; a.cl = a.cl || nameA.cl; }
   const group = (d && a.base && d.groups[a.base]) || [];
   // 여러 판매처가 파는 브랜드(삼성 등): 경쟁모델 없이 같은 모델의 다나와 최저가만 비교
@@ -385,7 +390,7 @@ function detailRow(a) {
     <table class="grid"><thead><tr><th>#</th><th class="left">${esc(a.a.base)} 전체 상품</th><th class="left">스펙</th><th>다나와 최저가</th><th>엑셀 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
 }
 function specSummary(cat, a) {
-  if (cat === 'gpu') return [a.fans ? a.fans + '팬' : '', a.led ? 'LED' : ''].filter(Boolean).join(' · ');
+  if (cat === 'gpu') return [a.fans ? a.fans + '팬' : '', a.led ? 'LED' : '', a.oc ? 'OC' : '', a.mem].filter(Boolean).join(' · ');
   if (cat === 'ssd') return [a.nand, a.dram ? 'DRAM' : 'DRAM없음', a.read ? `${a.read.toLocaleString()}/${a.write.toLocaleString()}` : '', a.warranty ? a.warranty + '년' : ''].filter(Boolean).join(' · ');
   return [a.cl ? 'CL' + a.cl : '', a.rgb ? 'RGB' : ''].filter(Boolean).join(' · ');
 }
