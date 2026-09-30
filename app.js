@@ -480,6 +480,21 @@ const XL = {
 const fillOf = (rgb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + rgb } });
 const thin = (rgb) => { const s = { style: 'thin', color: { argb: 'FF' + rgb } }; return { top: s, left: s, bottom: s, right: s }; };
 
+function gFormulas(o, cost, g) {
+  const rd = (x, m) => `ROUNDDOWN(${x}*${m},-1)`;
+  const sec = (x) => `(${x}-${rd(x, g.sel)}-${rd(x, g.dup)})`;              // 등재가 → 2차혜택가
+  const a = `ROUNDDOWN(${o}/(1-${g.sel}-${g.dup}),-1)`;                       // 2차혜택가 → 등재가 (정산가세팅 L열과 같은 방식)
+  const L = `(IF(${sec(`(${a}+10)`)}<=${o},${a}+10,IF(${sec(a)}<=${o},${a},${a}-10)))`;
+  const selPart = g.sel ? `-${rd(L, g.sel)}/${g.sel}*${g.selS}` : '';
+  const card = `MIN(ROUNDDOWN(${sec(L)}*${g.card},-1),IF(${sec(L)}>=${g.hi},${g.capH},${g.capL}))*${g.cardS}`;
+  const settle = `${L}-${L}*${g.fee}-${L}*${g.pro}${selPart}-${rd(L, g.dup)}-${card}`;
+  return {
+    max: `${o}-MIN(ROUNDDOWN(${o}*${g.card},-1),IF(${o}>=${g.hi},${g.capH},${g.capL}))`,
+    margin: `IF(${cost}="","",${settle}-${cost})`,
+    rate: `IF(OR(${cost}="",${cost}=0),"",K{r}/${cost})`,
+  };
+}
+
 function buildExportWorkbook() {
   const R = Math.round;
   const now = new Date(Date.now() + 9 * 3600 * 1000).toISOString();
@@ -527,10 +542,9 @@ function buildExportWorkbook() {
       cell.font = { ...font };
       cell.border = thin('D9D9D9');
       cell.alignment = [1, 13, 19].includes(c) ? { vertical: 'middle', horizontal: 'center' } : { vertical: 'middle' };
-      if (XL.money.includes(c)) cell.numFmt = '#,##0';
-      if (XL.pct.includes(c)) cell.numFmt = '0.00%';
+      if (XL.money.includes(c)) cell.numFmt = '#,##0;[Red]-#,##0';
+      if (XL.pct.includes(c)) cell.numFmt = '0.00%;[Red]-0.00%';
       if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
-      if ((c === 6 || c === 7 || c === 11 || c === 12) && typeof v === 'number' && v < 0) cell.font = { ...font, color: { argb: 'FFC00000' } };
       if (c === 16 && typeof v === 'number') {
         cell.numFmt = '+#,##0;-#,##0;0';
         if (v) cell.font = { ...font, bold: true, color: { argb: v > 0 ? 'FFC00000' : 'FF0070C0' } }; // 우리가 비싸면 빨강, 싸면 파랑
@@ -538,12 +552,30 @@ function buildExportWorkbook() {
       if (cut && c >= 8 && c <= 12) cell.fill = fillOf('FFFF00');                                   // 인하 필요 → 제안세팅 노란색
     });
     ws.getCell(r, 8).font = { ...ws.getCell(r, 8).font, bold: true };
+    // 제안세팅 I~L 은 수식 (result 는 열자마자 보이도록 미리 계산한 값)
+    const f = gFormulas(`H${r}`, `J${r}`, state.g);
+    ws.getCell(r, 9).value = { formula: f.max, result: R(a.sugMax) };
+    ws.getCell(r, 10).value = { formula: `IF(E${r}="","",E${r})`, result: cost ?? '' };
+    ws.getCell(r, 11).value = { formula: f.margin, result: sugM == null ? '' : sugM };
+    ws.getCell(r, 12).value = { formula: f.rate.replace('{r}', r), result: sugM == null ? '' : sugM / cost };
   });
+  wb.calcProperties = { fullCalcOnLoad: true };
   return { wb, name: `최저가비교_${now.slice(0, 10).replace(/-/g, '')}_${now.slice(11, 16).replace(':', '')}.xlsx` };
+}
+
+// 열어 둔 창이 예전 코드면(사이트 업데이트 후 새로고침 안 함) 옛 양식으로 받게 되므로 먼저 확인
+async function isStale() {
+  try {
+    const mine = ([...document.scripts].map((x) => x.src).find((u) => /app\.js\?v=/.test(u)) || '').split('v=')[1];
+    const html = await fetch(`index.html?t=${Date.now()}`, { cache: 'no-store' }).then((r) => r.text());
+    const live = (html.match(/app\.js\?v=([\w]+)/) || [])[1];
+    return !!(mine && live && mine !== live);
+  } catch { return false; }
 }
 
 async function exportXlsx() {
   if (!state.results.length) return;
+  if (await isStale()) { alert('사이트가 업데이트되었습니다. 새로고침(F5) 후 엑셀을 다시 올리고 받아 주세요.'); return; }
   if (!window.ExcelJS) { alert('엑셀 모듈을 불러오지 못했습니다. 새로고침 후 다시 눌러 주세요.'); return; }
   const { wb, name } = buildExportWorkbook();
   const buf = await wb.xlsx.writeBuffer();
