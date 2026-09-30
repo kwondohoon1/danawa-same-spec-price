@@ -181,13 +181,18 @@ const get = (u) => fetch(`${u}?t=${Date.now()}`, { cache: 'no-store' })
   .then((r) => { if (!r.ok) throw new Error(`${u.split('/').pop()} ${r.status}`); return r.text(); });
 
 // 오늘 시간대별 수집 기록에서 가장 최근 수집 시각 (없으면 null)
+// 오늘 기록이 아직 없으면(자정~첫 수집 전) 전날 마지막 수집 시각
 async function latestCollectedAt() {
-  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
-  try {
-    const m = parseCSV(await get(`${SRC}/hourly/${today}/collected.csv`));
-    const i = m.head.indexOf('collected_at');
-    return m.rows.map((r) => r[i]).filter(Boolean).sort().pop() || null;
-  } catch { return null; }
+  for (const back of [0, 1]) {
+    const day = new Date(Date.now() + 9 * 3600 * 1000 - back * 86400 * 1000).toISOString().slice(0, 10);
+    try {
+      const m = parseCSV(await get(`${SRC}/hourly/${day}/collected.csv`));
+      const i = m.head.indexOf('collected_at');
+      const at = m.rows.map((r) => r[i]).filter(Boolean).sort().pop();
+      if (at) return at;
+    } catch { /* 그날 기록 없음 */ }
+  }
+  return null;
 }
 
 async function loadCat(cat) {
@@ -484,10 +489,11 @@ function buildExportWorkbook() {
   const font = { name: '맑은 고딕', size: 10 };
   ws.columns = XL.cols.map(([, width]) => ({ width }));
 
-  ws.getCell('A1').value = now.slice(0, 10);
-  ws.getCell('A1').font = { ...font, bold: true };
-  ws.getCell('B1').value = when ? `다나와 ${when} 수집 기준 · 배송비 미포함 · 노란색 = 인하 필요` : '노란색 = 인하 필요';
-  ws.getCell('B1').font = { ...font, color: { argb: 'FF808080' } };
+  ws.mergeCells('A1:B1');                                   // 수집 날짜·시각 (맨 위)
+  ws.getCell('A1').value = when ? `수집 ${when}  (다나와 최저가 · 배송비 미포함)` : '수집 시각 확인 불가';
+  ws.getCell('A1').font = { ...font, size: 11, bold: true };
+  ws.getCell('C1').value = `노란색 = 인하 필요 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
+  ws.getCell('C1').font = { ...font, color: { argb: 'FF808080' } };
 
   for (const [c1, c2, title, g, h] of XL.groups) {
     if (c2 > c1) ws.mergeCells(2, c1, 2, c2);
@@ -522,7 +528,7 @@ function buildExportWorkbook() {
       cell.border = thin('D9D9D9');
       cell.alignment = [1, 13, 19].includes(c) ? { vertical: 'middle', horizontal: 'center' } : { vertical: 'middle' };
       if (XL.money.includes(c)) cell.numFmt = '#,##0';
-      if (XL.pct.includes(c)) cell.numFmt = '0.0%';
+      if (XL.pct.includes(c)) cell.numFmt = '0.00%';
       if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
       if ((c === 6 || c === 7 || c === 11 || c === 12) && typeof v === 'number' && v < 0) cell.font = { ...font, color: { argb: 'FFC00000' } };
       if (c === 16 && typeof v === 'number') {
