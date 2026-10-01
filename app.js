@@ -507,7 +507,7 @@ function buildExportWorkbook() {
   ws.mergeCells('A1:B1');                                   // 수집 날짜·시각 (맨 위)
   ws.getCell('A1').value = when ? `수집 ${when}  (다나와 최저가 · 배송비 미포함)` : '수집 시각 확인 불가';
   ws.getCell('A1').font = { ...font, size: 11, bold: true };
-  ws.getCell('C1').value = `노란색 = 인하 필요 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
+  ws.getCell('C1').value = `노란색 = 인하 필요 · 빨간색 = 인상 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
   ws.getCell('C1').font = { ...font, color: { argb: 'FF808080' } };
 
   for (const [c1, c2, title, g, h] of XL.groups) {
@@ -535,7 +535,7 @@ function buildExportWorkbook() {
       a.verdict,
     ];
     const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 17: lowUrl, 18: a.filterUrl };
-    const cut = a.verdict === '인하';
+    const mark = a.verdict === '인하' ? 'FFFF00' : a.verdict === '인상' ? 'FF8080' : null;   // 인하 노랑 · 인상 빨강
     vals.forEach((v, j) => {
       const c = j + 1, cell = ws.getCell(r, c);
       cell.value = urls[c] && v !== '' ? { text: String(v), hyperlink: urls[c] } : v;
@@ -549,7 +549,7 @@ function buildExportWorkbook() {
         cell.numFmt = '+#,##0;-#,##0;0';
         if (v) cell.font = { ...font, bold: true, color: { argb: v > 0 ? 'FFC00000' : 'FF0070C0' } }; // 우리가 비싸면 빨강, 싸면 파랑
       }
-      if (cut && c >= 8 && c <= 12) cell.fill = fillOf('FFFF00');                                   // 인하 필요 → 제안세팅 노란색
+      if (mark && c >= 8 && c <= 12) cell.fill = fillOf(mark);                                      // 제안세팅 칸 색
     });
     ws.getCell(r, 8).font = { ...ws.getCell(r, 8).font, bold: true };
     // 제안세팅 I~L 은 수식 (result 는 열자마자 보이도록 미리 계산한 값)
