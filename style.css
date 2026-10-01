@@ -102,3 +102,4 @@ table.xl .rule { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 button.vbtn { white-space: nowrap; cursor: pointer; background: #fff; padding: 2px 9px; font: inherit; font-size: 11px; font-weight: 600; box-shadow: 0 1px 0 rgba(0,0,0,.08); }
 button.vbtn:hover { background: #f3f4f6; }
 button.vbtn:active { transform: translateY(1px); }
+button.vbtn.manual { border-style: dashed; }

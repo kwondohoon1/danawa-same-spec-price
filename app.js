@@ -377,7 +377,7 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
     else {
       sug = fl10(low.price * TARGET);
       if (sug === row.price) { verdict = '유지'; vcls = 'ok'; }
-      else { verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'down' : 'up'; }
+      else { verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'up' : 'down'; } // 색은 차이 칸과 같게 (인하=우리가 비쌈)
     }
     if (row.cost) {
       be = breakeven2nd(row.cost, g);
@@ -429,8 +429,8 @@ function renderCompare() {
     const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
     const canKeep = a.manual || a.verdict === '인하' || a.verdict === '인상';
     const badge = !canKeep ? `<span class="badge ${a.vcls}">${a.verdict}</span>`
-      : a.manual ? `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="원래 판정(${a.autoVerdict} ${won(a.autoSug)})으로 되돌리기">유지 (직접) ↺</button>`
-      : `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="누르면 현재 노출가 그대로 유지">${a.verdict} → 유지</button>`;
+      : a.manual ? `<button type="button" class="badge vbtn manual ${a.vcls}" data-keep="${i}" title="직접 유지로 바꿈 · 다시 누르면 원래 판정(${a.autoVerdict} ${won(a.autoSug)})">유지</button>`
+      : `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="누르면 유지 (현재 노출가 그대로)">${a.verdict}</button>`;
     const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
     return `<tr data-r="${i}">
       ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span><span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
@@ -454,8 +454,8 @@ function renderCompare() {
   const all = state.results, cnt = (v) => all.filter((a) => a.verdict === v).length;
   $('#summary').innerHTML = `
     <div class="tile"><b>${all.length}</b><span>엑셀 모델</span></div>
-    <div class="tile"><b class="down">${cnt('인하')}</b><span>인하 제안</span></div>
-    <div class="tile"><b class="up">${cnt('인상')}</b><span>인상 제안</span></div>
+    <div class="tile"><b class="up">${cnt('인하')}</b><span>인하 제안</span></div>
+    <div class="tile"><b class="down">${cnt('인상')}</b><span>인상 제안</span></div>
     <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지${all.some((a) => a.manual) ? ` (직접 ${all.filter((a) => a.manual).length})` : ' (−0.5~−1%)'}</span></div>
     <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
     <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
