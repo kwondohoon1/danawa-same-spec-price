@@ -376,7 +376,8 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
     if (ratio >= TARGET && ratio <= KEEP_HI) { verdict = '유지'; vcls = 'ok'; }
     else {
       sug = fl10(low.price * TARGET);
-      verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'down' : 'up';
+      if (sug === row.price) { verdict = '유지'; vcls = 'ok'; }
+      else { verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'down' : 'up'; }
     }
     if (row.cost) {
       be = breakeven2nd(row.cost, g);
@@ -392,6 +393,16 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
     curMax: row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: gMaxBenefit(sug, g) };
 }
 
+// ---------- 직접 유지 ----------
+// 사용자가 판정 버튼을 눌러 유지로 바꾼 모델 (모델명 기준, 새 가격으로 다시 계산해도 유지)
+state.keep = new Set();
+function applyKeep(a) {
+  if (!state.keep.has(a.model) || (a.verdict !== '인하' && a.verdict !== '인상')) return a;
+  const g = state.g, sugSettle = settleAt2nd(a.price, g);
+  return { ...a, verdict: '유지', vcls: 'ok', manual: true, autoVerdict: a.verdict, autoSug: a.sug, sug: a.price, sugDiff: 0,
+    sugSettle, sugMax: gMaxBenefit(a.price, g), sugMargin: a.cost ? (sugSettle - a.cost) / a.cost : null };
+}
+
 // ---------- 렌더: 비교 ----------
 const link = (cat, it, text) => `<a href="${danawaUrl(cat, it.code)}" target="_blank" rel="noopener" title="다나와에서 보기">${esc(text ?? it.name)}</a>`;
 function renderCompare() {
@@ -400,7 +411,7 @@ function renderCompare() {
   const f = $('#cat-filter').value, onlyUp = $('#only-expensive').checked;
   const matched = state.rows.map(matchRow);
   const ownCodes = new Set(matched.filter((m) => m.listing).map((m) => m.listing.code));
-  state.results = matched.map((m) => analyze(m, ownCodes));
+  state.results = matched.map((m) => applyKeep(analyze(m, ownCodes)));
   state.ownCodes = ownCodes;
   const list = state.results.filter((a) => (!f || CATS[a.catKey].excel === f) && (!onlyUp || a.diff > 0));
   state.list = list; state.sel = null;
@@ -416,6 +427,10 @@ function renderCompare() {
     const rule = (a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>')
       + ` <a class="flink" href="${esc(a.filterUrl)}" target="_blank" rel="noopener" title="우리 제품 기준 스펙으로 다나와 목록 필터">다나와 필터 ↗</a>`;
     const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
+    const canKeep = a.manual || a.verdict === '인하' || a.verdict === '인상';
+    const badge = !canKeep ? `<span class="badge ${a.vcls}">${a.verdict}</span>`
+      : a.manual ? `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="원래 판정(${a.autoVerdict} ${won(a.autoSug)})으로 되돌리기">유지 (직접) ↺</button>`
+      : `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="누르면 현재 노출가 그대로 유지">${a.verdict} → 유지</button>`;
     const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
     return `<tr data-r="${i}">
       ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span><span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
@@ -423,10 +438,15 @@ function renderCompare() {
       ${td(2, a.listing ? a.listing.price : '', dnw)}
       ${td(3, a.low ? a.low.price : '', low)}
       ${td(4, a.diff ?? '', `<span class="${cls}">${a.diff == null ? '-' : signed(a.diff)}</span><div class="spec">${pctTxt(a.pct)}${a.rank ? ` · ${a.rank}/${a.total}위` : ''}</div>`)}
-      ${td(5, a.sug, `<b>${won(a.sug)}</b>${sugNote}<div><span class="badge ${a.vcls}">${a.verdict}</span></div>`, 'sugc')}
+      ${td(5, a.sug, `<b>${won(a.sug)}</b>${sugNote}<div>${badge}</div>`, 'sugc')}
       ${td(6, Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
   }).join('') || '<tr><td colspan="7" class="center muted">표시할 모델이 없습니다</td></tr>';
+  tb.querySelectorAll('[data-keep]').forEach((b) => b.addEventListener('click', () => {
+    const m = list[+b.dataset.keep].model;
+    if (state.keep.has(m)) state.keep.delete(m); else state.keep.add(m);
+    renderCompare();
+  }));
   tb.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
     const a = list[+b.dataset.open]; state.openRow = state.openRow === a.model ? null : a.model; renderCompare();
   }));
@@ -436,7 +456,7 @@ function renderCompare() {
     <div class="tile"><b>${all.length}</b><span>엑셀 모델</span></div>
     <div class="tile"><b class="down">${cnt('인하')}</b><span>인하 제안</span></div>
     <div class="tile"><b class="up">${cnt('인상')}</b><span>인상 제안</span></div>
-    <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지 (−0.5~−1%)</span></div>
+    <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지${all.some((a) => a.manual) ? ` (직접 ${all.filter((a) => a.manual).length})` : ' (−0.5~−1%)'}</span></div>
     <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
     <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
 }
@@ -678,7 +698,7 @@ $('#export').addEventListener('click', exportXlsx);
 $('#only-expensive').addEventListener('change', renderCompare);
 setupSelection();
 $('#clear').addEventListener('click', () => {
-  state.rows = []; state.results = []; state.openRow = null; input.value = '';
+  state.rows = []; state.results = []; state.openRow = null; state.keep.clear(); input.value = '';
   $('#compare').hidden = true; $('#file-status').textContent = '엑셀은 이 브라우저 안에서만 읽고, 어디에도 전송·저장하지 않습니다.';
 });
 $('#b-cat').addEventListener('change', renderBrowseSpecs);
