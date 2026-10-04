@@ -6,7 +6,7 @@
   <title>동일스펙 가격비교</title>
   <meta name="robots" content="noindex">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
-  <link rel="stylesheet" href="style.css?v=20261005a">
+  <link rel="stylesheet" href="style.css?v=20261005c">
 </head>
 <body>
   <header class="top">
@@ -45,6 +45,8 @@
             <option value="RAM">RAM</option>
           </select>
           <label class="chk"><input type="checkbox" id="only-expensive"> 최저가보다 비싼 것만</label>
+          <button id="undo-ex" type="button" hidden></button>
+          <button id="drop-odd" type="button" title="가격 이상? 표시된 가격을 모두 빼고 다음으로 싼 상품으로 비교">이상 가격 빼기</button>
           <button id="export" type="button" class="primary">엑셀로 받기</button>
           <button id="clear" type="button" class="ghost">엑셀 지우기</button>
         </div>
@@ -52,7 +54,7 @@
       <div class="summary" id="summary"></div>
       <p class="hint">엑셀처럼 <b>셀을 드래그</b>하거나 <b>열 제목을 클릭</b>해 선택한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd> → 엑셀에 붙여넣기. 숫자는 쉼표 없이 복사됩니다.
         제안 노출가 열 전체를 복사해 <em>정산가세팅</em> 입력가(E18)에 붙여넣으면 행 순서가 그대로 맞습니다. 상품명을 누르면 다나와로 이동합니다.
-        <b>엑셀로 받기</b>는 단가표 <em>최저가비교</em> 시트 양식(A~S열, 4행부터 정산가세팅 순서)으로 내려받습니다. 제안세팅은 노출가만 숫자이고 나머지는 수식이라 노출가를 고치면 최대혜택가·마진·마진율이 다시 계산됩니다. 노란색 = 인하 필요 · 빨간색 = 인상, 가격차이 빨강 = 우리가 비쌈 · 파랑 = 우리가 쌈. 판정 버튼(<b>인하</b>·<b>인상</b>)을 누르면 그 상품은 현재 노출가 그대로 유지로 바뀌고 엑셀에도 그대로 들어갑니다(다시 누르면 원래대로). <b>다나와 필터 ↗</b>는 우리 제품 기준 스펙으로 다나와 목록을 거른 링크입니다(열면 낮은가격순을 한 번 눌러 주세요).
+        <b>엑셀로 받기</b>는 단가표 <em>최저가비교</em> 시트 양식(A~S열, 4행부터 정산가세팅 순서)으로 내려받습니다. 제안세팅은 노출가만 숫자이고 나머지는 수식이라 노출가를 고치면 최대혜택가·마진·마진율이 다시 계산됩니다. 노란색 = 인하 필요 · 빨간색 = 인상, 가격차이 빨강 = 우리가 비쌈 · 파랑 = 우리가 쌈. 판정 버튼(<b>인하</b>·<b>인상</b>)을 누르면 그 상품은 현재 노출가 그대로 유지로 바뀌고 엑셀에도 그대로 들어갑니다(다시 누르면 원래대로). <b>가격 이상?</b> = 이전 수집일보다 20% 넘게 떨어졌거나(이전 가격이 없으면) 같은 조건 경쟁 상품 중간값보다 20% 넘게 싼 가격(판매처 한 곳의 비정상 가격 등). 최저가 옆 <b>빼기</b>로 하나씩 뺄 수도 있습니다. <b>이상 가격 빼기</b>를 누르면 이것들을 빼고 다음으로 싼 상품으로 다시 비교합니다(엑셀에도 반영). <b>다나와 필터 ↗</b>는 우리 제품 기준 스펙으로 다나와 목록을 거른 링크입니다(열면 낮은가격순을 한 번 눌러 주세요).
         <span id="copy-toast" class="toast" hidden></span></p>
       <div class="table-scroll">
         <table class="grid xl" id="compare-table">
@@ -99,6 +101,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script src="app.js?v=20261005a"></script>
+  <script src="app.js?v=20261005c"></script>
 </body>
 </html>
