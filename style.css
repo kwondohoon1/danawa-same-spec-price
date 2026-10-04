@@ -126,11 +126,3 @@ button.vbtn { white-space: nowrap; cursor: pointer; background: #fff; padding: 2
 button.vbtn:hover { background: var(--panel2); box-shadow: 0 2px 6px rgba(25, 27, 22, .1); }
 button.vbtn:active { transform: translateY(1px); }
 button.vbtn.manual { border-style: dashed; }
-
-/* 이상 가격 표시 · 빼기 버튼 */
-.tag.odd { background: #ffe3cf; color: #a4441a; cursor: help; }
-#drop-odd.on { background: var(--dark); border-color: var(--dark); color: #fff; }
-button:disabled { opacity: .45; cursor: default; box-shadow: none; }
-button.xbtn { padding: 0 7px; font-size: 10.5px; border-radius: 99px; color: var(--muted); vertical-align: 1px; }
-button.xbtn:hover { color: var(--ink); border-color: var(--ink); }
-[hidden] { display: none !important; }

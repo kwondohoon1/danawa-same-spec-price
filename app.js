@@ -13,7 +13,6 @@ const EXCLUDE = /중고|해외구매|리퍼|벌크/;
 const SHARED_BRAND = /삼성/;               // 여러 판매처가 파는 브랜드 → 경쟁모델 대신 같은 모델의 다나와 최저가만 사용
 const TARGET = 0.99;                     // 제안가 = 경쟁 최저가 × 99% (1% 낮게)
 const KEEP_HI = 0.995;                   // 경쟁가 대비 -0.5% ~ -1% 이면 유지
-const ODD_DROP = 0.8;                    // 이전 수집일 최저가의 80% 미만이면 '가격 이상?' (판매처 한 곳의 비정상 가격 등)
 
 // G마켓 조건 기본값 (엑셀 정산가세팅 '마켓 조건'을 찾지 못했을 때)
 const G_DEFAULT = { md: 0.02, sel: 0.11, selS: 0.02, dup: 0.08, card: 0.07, cardS: 0.5, capH: 150000, hi: 1200000, capL: 70000, fee: 0.09, pro: 0.02 };
@@ -206,14 +205,12 @@ async function loadCat(cat) {
   for (const r of prices.rows) {
     const code = r[0], name = r[1];
     if (!code || EXCLUDE.test(name)) continue;
-    let price = null, date = null, prev = null, prevDate = null, k = -1;
-    for (let i = 2; i < r.length; i++) { const v = parseInt(r[i], 10); if (v > 0) { price = v; date = dates[i - 2]; k = i; break; } }
+    let price = null, date = null;
+    for (let i = 2; i < r.length; i++) { const v = parseInt(r[i], 10); if (v > 0) { price = v; date = dates[i - 2]; break; } }
     if (!price) continue;
-    for (let i = k + 1; i < r.length; i++) { const v = parseInt(r[i], 10); if (v > 0) { prev = v; prevDate = dates[i - 2]; break; } }
     const sp = specBy[code] || {};
     const a = attrsFromSpec(cat, sp, name);
-    items.push({ code, name, price, date, prev, prevDate, odd: !!(prev && price < prev * ODD_DROP),
-      week: parseInt(r[r.length - 1], 10) || null, sp, a, key: a.base, own: OWN_SELLER.test(name) });
+    items.push({ code, name, price, date, week: parseInt(r[r.length - 1], 10) || null, sp, a, key: a.base, own: OWN_SELLER.test(name) });
   }
   const groups = {};
   for (const it of items) if (it.key) (groups[it.key] ||= []).push(it);
@@ -366,16 +363,8 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const rule = sameOther ? { label: '동일모델 다나와 최저가 (경쟁모델 제외)', test: (b) => b === listing.a }
     : a.base ? makeRule(cat, a) : null;
   // 그 외: 엑셀에 있는 자사 모델의 다나와 상품은 경쟁에서 제외
-  let others = sameOther ? [listing]
+  const others = sameOther ? [listing]
     : group.filter((it) => !it.own && rule.test(it.a) && !ownCodes.has(it.code));
-  // 이상 가격: 이력이 있으면 이전 수집일보다 20%↓, 이력이 없으면(새로 잡힌 상품) 같은 조건 경쟁 상품 중간값보다 20%↓
-  const prices = others.map((it) => it.price).sort((x, y) => x - y);
-  const med = prices.length >= 5 ? prices[Math.floor(prices.length / 2)] : null;
-  const oddCodes = new Set(group.filter((it) => it.odd || (!it.prev && med && it.price < med * ODD_DROP)).map((it) => it.code));
-  if (listing && (listing.odd || (!listing.prev && med && listing.price < med * ODD_DROP))) oddCodes.add(listing.code);
-  const skip = (it) => state.exclude.has(it.code) || (state.dropOdd && oddCodes.has(it.code));
-  const skippedOdd = sameOther ? 0 : others.filter(skip).length;
-  if (!sameOther) others = others.filter((it) => !skip(it));
   const low = others[0] || null;
   const diff = low ? row.price - low.price : null;
   const cheaper = others.filter((it) => it.price < row.price).length;
@@ -400,27 +389,19 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const filterUrl = danawaFilterUrl(cat, a, sameOther ? listing : null);
   return { ...row, catKey: cat, a, rule, listing, group, others, low, diff, pct: low ? diff / low.price : null,
     rank: low ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: sug - row.price, verdict, vcls, be,
-    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl, skippedOdd, oddCodes, med,
+    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl,
     curMax: row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: gMaxBenefit(sug, g) };
 }
 
 // ---------- 직접 유지 ----------
 // 사용자가 판정 버튼을 눌러 유지로 바꾼 모델 (모델명 기준, 새 가격으로 다시 계산해도 유지)
 state.keep = new Set();
-state.exclude = new Set();   // '빼기'로 직접 뺀 경쟁 상품 코드
 function applyKeep(a) {
   if (!state.keep.has(a.model) || (a.verdict !== '인하' && a.verdict !== '인상')) return a;
   const g = state.g, sugSettle = settleAt2nd(a.price, g);
   return { ...a, verdict: '유지', vcls: 'ok', manual: true, autoVerdict: a.verdict, autoSug: a.sug, sug: a.price, sugDiff: 0,
     sugSettle, sugMax: gMaxBenefit(a.price, g), sugMargin: a.cost ? (sugSettle - a.cost) / a.cost : null };
 }
-
-const oddTag = (it, a) => {
-  if (!it || !a || !a.oddCodes || !a.oddCodes.has(it.code)) return '';
-  const why = it.odd ? `이전 수집일(${esc(it.prevDate)}) ${won(it.prev)}원 → ${won(it.price)}원 (${Math.round((1 - it.price / it.prev) * 100)}% 하락)`
-    : `이전 가격 없음 · 같은 조건 경쟁 상품 중간값 ${won(a.med)}원보다 ${Math.round((1 - it.price / a.med) * 100)}% 낮음`;
-  return ` <span class="tag odd" title="${why}">가격 이상?</span>`;
-};
 
 // ---------- 렌더: 비교 ----------
 const link = (cat, it, text) => `<a href="${danawaUrl(cat, it.code)}" target="_blank" rel="noopener" title="다나와에서 보기">${esc(text ?? it.name)}</a>`;
@@ -441,9 +422,8 @@ function renderCompare() {
     const cls = a.diff > 0 ? 'up' : a.diff < 0 ? 'down' : '';
     const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
     const shared = a.sameOther;
-    const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${oddTag(a.listing, a)}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
-    const xbtn = a.low && !shared ? ` <button type="button" class="xbtn" data-ex="${esc(a.low.code)}" title="이 가격을 빼고 다음으로 싼 상품으로 비교">빼기</button>` : '';
-    const low = a.low ? `<b>${won(a.low.price)}</b>${oddTag(a.low, a)}${xbtn}<div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>${a.skippedOdd ? `<div class="spec">더 싼 가격 ${a.skippedOdd}개 뺌</div>` : ''}` : '<span class="muted">동일스펙 없음</span>';
+    const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
+    const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
     const rule = (a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>')
       + ` <a class="flink" href="${esc(a.filterUrl)}" target="_blank" rel="noopener" title="우리 제품 기준 스펙으로 다나와 목록 필터">다나와 필터 ↗</a>`;
     const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
@@ -462,7 +442,6 @@ function renderCompare() {
       ${td(6, Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
   }).join('') || '<tr><td colspan="7" class="center muted">표시할 모델이 없습니다</td></tr>';
-  tb.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => { state.exclude.add(b.dataset.ex); renderCompare(); }));
   tb.querySelectorAll('[data-keep]').forEach((b) => b.addEventListener('click', () => {
     const m = list[+b.dataset.keep].model;
     if (state.keep.has(m)) state.keep.delete(m); else state.keep.add(m);
@@ -473,13 +452,6 @@ function renderCompare() {
   }));
 
   const all = state.results, cnt = (v) => all.filter((a) => a.verdict === v).length;
-  const oddRows = all.filter((a) => (a.low && a.oddCodes.has(a.low.code)) || (state.dropOdd && a.skippedOdd)).length;
-  const ob = $('#drop-odd');
-  ob.textContent = state.dropOdd ? `이상 가격 다시 포함 (${oddRows})` : `이상 가격 빼기 (${oddRows})`;
-  ob.classList.toggle('on', !!state.dropOdd);
-  ob.disabled = !state.dropOdd && !oddRows;
-  const ub = $('#undo-ex');
-  ub.hidden = !state.exclude.size; ub.textContent = `직접 뺀 가격 ${state.exclude.size}개 되돌리기`;
   $('#summary').innerHTML = `
     <div class="tile"><b>${all.length}</b><span>엑셀 모델</span></div>
     <div class="tile"><b class="up">${cnt('인하')}</b><span>인하 제안</span></div>
@@ -496,7 +468,7 @@ function detailRow(a) {
     const ok = !mine && a.rule.test(it.a);
     const d = a.price - it.price;
     return `<tr class="${mine ? 'own' : ok ? '' : 'dim'}"><td class="center">${i + 1}</td>
-      <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}${oddTag(it, a)}${state.exclude.has(it.code) ? '<span class="tag">뺌</span>' : ''}</td>
+      <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}</td>
       <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
       <td>${won(it.price)}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
   }).join('');
@@ -555,7 +527,7 @@ function buildExportWorkbook() {
   ws.mergeCells('A1:B1');                                   // 수집 날짜·시각 (맨 위)
   ws.getCell('A1').value = when ? `수집 ${when}  (다나와 최저가 · 배송비 미포함)` : '수집 시각 확인 불가';
   ws.getCell('A1').font = { ...font, size: 11, bold: true };
-  ws.getCell('C1').value = `${state.dropOdd || state.exclude.size ? '이상 가격 뺀 기준 · ' : ''}노란색 = 인하 필요 · 빨간색 = 인상 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
+  ws.getCell('C1').value = `노란색 = 인하 필요 · 빨간색 = 인상 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
   ws.getCell('C1').font = { ...font, color: { argb: 'FF808080' } };
 
   for (const [c1, c2, title, g, h] of XL.groups) {
@@ -722,13 +694,11 @@ input.addEventListener('change', () => input.files[0] && readExcel(input.files[0
 ['dragleave', 'drop'].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove('over'); }));
 drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (f) readExcel(f); });
 $('#cat-filter').addEventListener('change', renderCompare);
-$('#drop-odd').addEventListener('click', () => { state.dropOdd = !state.dropOdd; renderCompare(); });
-$('#undo-ex').addEventListener('click', () => { state.exclude.clear(); renderCompare(); });
 $('#export').addEventListener('click', exportXlsx);
 $('#only-expensive').addEventListener('change', renderCompare);
 setupSelection();
 $('#clear').addEventListener('click', () => {
-  state.rows = []; state.results = []; state.openRow = null; state.keep.clear(); state.exclude.clear(); input.value = '';
+  state.rows = []; state.results = []; state.openRow = null; state.keep.clear(); input.value = '';
   $('#compare').hidden = true; $('#file-status').textContent = '엑셀은 이 브라우저 안에서만 읽고, 어디에도 전송·저장하지 않습니다.';
 });
 $('#b-cat').addEventListener('change', renderBrowseSpecs);
