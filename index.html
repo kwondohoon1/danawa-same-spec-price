@@ -5,13 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>동일스펙 가격비교</title>
   <meta name="robots" content="noindex">
-  <link rel="stylesheet" href="style.css?v=20261001g">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
+  <link rel="stylesheet" href="style.css?v=20261005a">
 </head>
 <body>
   <header class="top">
     <div class="wrap">
-      <h1>동일스펙 가격비교</h1>
-      <p class="sub">다나와 최저가(매일 수집) 기준 · 그래픽카드 / SSD / RAM</p>
+      <div class="logo">₩</div>
+      <div>
+        <h1>동일스펙 가격비교</h1>
+        <p class="sub">다나와 최저가(07~18시 매시 수집) 기준 · 그래픽카드 / SSD / RAM</p>
+      </div>
     </div>
   </header>
 
@@ -41,7 +45,7 @@
             <option value="RAM">RAM</option>
           </select>
           <label class="chk"><input type="checkbox" id="only-expensive"> 최저가보다 비싼 것만</label>
-          <button id="export" type="button">엑셀로 받기</button>
+          <button id="export" type="button" class="primary">엑셀로 받기</button>
           <button id="clear" type="button" class="ghost">엑셀 지우기</button>
         </div>
       </div>
@@ -95,6 +99,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script src="app.js?v=20261001g"></script>
+  <script src="app.js?v=20261005a"></script>
 </body>
 </html>
