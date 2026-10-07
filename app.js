@@ -18,7 +18,8 @@ const KEEP_HI = 0.995;                   // 경쟁가 대비 -0.5% ~ -1% 이면 
 const G_DEFAULT = { md: 0.02, sel: 0.11, selS: 0.02, dup: 0.08, card: 0.07, cardS: 0.5, capH: 150000, hi: 1200000, capL: 70000, fee: 0.09, pro: 0.02 };
 const G_LABELS = { 'MD쿠폰': 'md', '선택쿠폰': 'sel', '선택쿠폰셀러부담': 'selS', '중복쿠폰(셀러부담)': 'dup', '카드즉시할인': 'card', '카드할인셀러부담비율': 'cardS', '카드할인한도(고가)': 'capH', '카드할인고가기준금액': 'hi', '카드할인한도(중저가)': 'capL', 'Cat수수료': 'fee', '프로모션수수료': 'pro' };
 
-const state = { db: {}, rows: [], g: { ...G_DEFAULT }, gFromExcel: false, openRow: null, results: [] };
+const state = { db: {}, rows: [], g: { ...G_DEFAULT }, gFromExcel: false, openRow: null, results: [], openOnly: true };
+try { state.openOnly = localStorage.getItem('openOnly') !== 'N'; } catch { /* 저장소 막힘 → 기본값 */ }
 const $ = (s) => document.querySelector(s);
 const won = (n) => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('ko-KR'));
 const signed = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(Math.round(n)).toLocaleString('ko-KR');
@@ -196,8 +197,18 @@ async function latestCollectedAt() {
 }
 
 async function loadCat(cat) {
-  const [p, s] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`)]);
+  const [p, s, o] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`),
+    get(`${SRC}/latest/${cat}_open.csv`).catch(() => null)]);
   const prices = parseCSV(p), specs = parseCSV(s);
+  // 오픈마켓(11번가·G마켓·옥션·스마트스토어)만의 최저가·배송비·쇼핑몰
+  const openBy = {};
+  if (o) {
+    const m = parseCSV(o), at = (h) => m.head.indexOf(h);
+    for (const r of m.rows) {
+      const price = parseInt(r[at('price')], 10);
+      if (price > 0) openBy[r[at('product_code')]] = { price, ship: r[at('shipping')] === '' ? null : parseInt(r[at('shipping')], 10), mall: r[at('mall')] };
+    }
+  }
   const dates = prices.head.slice(2);
   const specBy = {};
   for (const r of specs.rows) { const o = {}; specs.head.forEach((h, i) => (o[h] = r[i])); specBy[o.product_code] = o; }
@@ -212,12 +223,29 @@ async function loadCat(cat) {
     const a = attrsFromSpec(cat, sp, name);
     items.push({ code, name, price, date, week: parseInt(r[r.length - 1], 10) || null, sp, a, key: a.base, own: OWN_SELLER.test(name) });
   }
+  const d = { all: items, allGroups: groupOf(items), openBy, hasOpen: !!o, today: dates[0] };
+  return setView(d);
+}
+function groupOf(items) {
   const groups = {};
   for (const it of items) if (it.key) (groups[it.key] ||= []).push(it);
   for (const k in groups) groups[k].sort((x, y) => x.price - y.price);
-  return { items, groups, today: dates[0] };
+  return groups;
 }
+// 비교에 쓰는 상품 목록: 오픈마켓만이면 오픈마켓 최저가로 바꾸고 오픈마켓에 없는 상품은 뺀다
+function setView(d) {
+  const open = state.openOnly && d.hasOpen;
+  d.items = open ? d.all.filter((it) => d.openBy[it.code]).map((it) => ({ ...it, ...d.openBy[it.code] })) : d.all;
+  d.groups = open ? groupOf(d.items) : d.allGroups;
+  d.byCode = {}; for (const it of d.items) d.byCode[it.code] = it;
+  return d;
+}
+const shipTxt = (it) => (it.ship == null ? '' : it.ship ? `배송비 ${won(it.ship)}` : '무료배송');
+const mallTxt = (it) => [it.mall, shipTxt(it)].filter(Boolean).join(' · ');
 
+const openActive = () => state.openOnly && Object.values(state.db).some((d) => d.hasOpen);
+const scopeTxt = () => (openActive() ? '<b>오픈마켓</b> 최저가' : '전체 쇼핑몰 최저가');
+const paintStatus = () => { if (state.statusHead) $('#data-status').innerHTML = `${state.statusHead} · ${scopeTxt()}`; };
 async function loadAll() {
   const st = $('#data-status');
   try {
@@ -229,8 +257,9 @@ async function loadAll() {
     state.collectedAt = at;
     const n = res.reduce((a, [, d]) => a + d.items.length, 0);
     const when = at ? `${at.slice(0, 10)} ${at.slice(11, 16)}` : res[0][1].today;
-    st.innerHTML = `가격 데이터 <b>${when}</b> 수집 기준 · ${n.toLocaleString()}개 상품 불러옴`;
-    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 07~18시 매시 갱신, 배송비 미포함). 중고·해외구매·리퍼·벌크 제외.`;
+    state.statusHead = `가격 데이터 <b>${when}</b> 수집 기준 · ${n.toLocaleString()}개 상품 불러옴`;
+    paintStatus();
+    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 07~18시 매시 갱신, 가격은 배송비 별도). 오픈마켓 = 11번가·G마켓·옥션·네이버 스마트스토어 (현금몰·전문몰·종합몰 제외). 중고·해외구매·리퍼·벌크 제외.`;
     renderBrowseSpecs();
     if (state.rows.length) renderCompare();
   } catch (e) {
@@ -336,7 +365,7 @@ function findListing(cat, row, base) {
   const d = state.db[cat]; if (!d) return null;
   const want = tokens(row.model), cap = gb(row.model);
   let best = null, bestScore = 0;
-  for (const it of base ? d.groups[base] || [] : d.items) {
+  for (const it of base ? d.allGroups[base] || [] : d.all) {
     const have = new Set(tokens(it.name));
     let hit = 0; for (const t of want) if (have.has(t)) hit++;
     if (cat !== 'gpu' && cap && gb(it.name) !== cap) continue;
@@ -363,7 +392,7 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const rule = sameOther ? { label: '동일모델 다나와 최저가 (경쟁모델 제외)', test: (b) => b === listing.a }
     : a.base ? makeRule(cat, a) : null;
   // 그 외: 엑셀에 있는 자사 모델의 다나와 상품은 경쟁에서 제외
-  const others = sameOther ? [listing]
+  const others = sameOther ? (d.byCode[listing.code] ? [d.byCode[listing.code]] : [])
     : group.filter((it) => !it.own && rule.test(it.a) && !ownCodes.has(it.code));
   const low = others[0] || null;
   const diff = low ? row.price - low.price : null;
@@ -423,7 +452,7 @@ function renderCompare() {
     const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
     const shared = a.sameOther;
     const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
-    const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>` : '<span class="muted">동일스펙 없음</span>';
+    const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>${a.low.mall ? `<div class="spec">${esc(mallTxt(a.low))}</div>` : ''}` : '<span class="muted">동일스펙 없음</span>';
     const rule = (a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>')
       + ` <a class="flink" href="${esc(a.filterUrl)}" target="_blank" rel="noopener" title="우리 제품 기준 스펙으로 다나와 목록 필터">다나와 필터 ↗</a>`;
     const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
@@ -470,7 +499,7 @@ function detailRow(a) {
     return `<tr class="${mine ? 'own' : ok ? '' : 'dim'}"><td class="center">${i + 1}</td>
       <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}</td>
       <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
-      <td>${won(it.price)}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
+      <td>${won(it.price)}${it.mall ? `<div class="spec">${esc(mallTxt(it))}</div>` : ''}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
   }).join('');
   return `<tr class="detail"><td colspan="7"><div class="spec" style="margin-bottom:6px">경쟁 조건: <b>${esc(a.rule.label)}</b> · 회색 = 조건 밖(기본 스펙만 같음)</div>
     <table class="grid"><thead><tr><th>#</th><th class="left">${esc(a.a.base)} 전체 상품</th><th class="left">스펙</th><th>다나와 최저가</th><th>엑셀 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
@@ -489,13 +518,13 @@ const XL = {
     ['다나와코드', 11], ['상품명', 50],
     ['노출가', 11], ['최대혜택가', 11], ['원가', 11], ['마진', 10], ['마진율', 8],
     ['노출가', 11], ['최대혜택가', 11], ['원가', 11], ['마진', 10], ['마진율', 8],
-    ['다나와코드', 11], ['상품명', 46], ['노출가', 11], ['가격차이', 10], ['상품 URL', 22], ['필터 URL', 22],
+    ['다나와코드', 11], ['상품명', 46], ['노출가', 11], ['쇼핑몰', 16], ['배송비', 8], ['가격차이', 10], ['상품 URL', 22], ['필터 URL', 22],
     ['판정', 9],
   ],
   // [시작열, 끝열, 제목, 구분색, 제목행색]
   groups: [[1, 2, '', 'D9D9D9', 'F2F2F2'], [3, 7, '현재세팅', '9BC2E6', 'DDEBF7'], [8, 12, '제안세팅', 'A9D08E', 'E2EFDA'],
-    [13, 18, '가격비교', 'F4B084', 'FCE4D6'], [19, 19, '', 'D9D9D9', 'F2F2F2']],
-  money: [3, 4, 5, 6, 8, 9, 10, 11, 15], pct: [7, 12], links: [1, 13, 17, 18],
+    [13, 20, '가격비교', 'F4B084', 'FCE4D6'], [21, 21, '', 'D9D9D9', 'F2F2F2']],
+  money: [3, 4, 5, 6, 8, 9, 10, 11, 15, 17], pct: [7, 12], links: [1, 13, 19, 20],
 };
 const fillOf = (rgb) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + rgb } });
 const thin = (rgb) => { const s = { style: 'thin', color: { argb: 'FF' + rgb } }; return { top: s, left: s, bottom: s, right: s }; };
@@ -525,7 +554,8 @@ function buildExportWorkbook() {
   ws.columns = XL.cols.map(([, width]) => ({ width }));
 
   ws.mergeCells('A1:B1');                                   // 수집 날짜·시각 (맨 위)
-  ws.getCell('A1').value = when ? `수집 ${when}  (다나와 최저가 · 배송비 미포함)` : '수집 시각 확인 불가';
+  const scope = openActive() ? '다나와 오픈마켓 최저가' : '다나와 전체 쇼핑몰 최저가';
+  ws.getCell('A1').value = when ? `수집 ${when}  (${scope} · 배송비 별도)` : '수집 시각 확인 불가';
   ws.getCell('A1').font = { ...font, size: 11, bold: true };
   ws.getCell('C1').value = `노란색 = 인하 필요 · 빨간색 = 인상 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
   ws.getCell('C1').font = { ...font, color: { argb: 'FF808080' } };
@@ -551,23 +581,26 @@ function buildExportWorkbook() {
       a.listing ? a.listing.code : '', a.model,
       a.price, R(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
       a.sug, R(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
-      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? a.price - low.price : '', lowUrl, a.filterUrl,
+      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? low.mall || '' : '', low && low.ship != null ? low.ship : '',
+      low ? a.price - low.price : '', lowUrl, a.filterUrl,
       a.verdict,
     ];
-    const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 17: lowUrl, 18: a.filterUrl };
+    const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 19: lowUrl, 20: a.filterUrl };
     const mark = a.verdict === '인하' ? 'FFFF00' : a.verdict === '인상' ? 'FF8080' : null;   // 인하 노랑 · 인상 빨강
     vals.forEach((v, j) => {
       const c = j + 1, cell = ws.getCell(r, c);
       cell.value = urls[c] && v !== '' ? { text: String(v), hyperlink: urls[c] } : v;
       cell.font = { ...font };
       cell.border = thin('D9D9D9');
-      cell.alignment = [1, 13, 19].includes(c) ? { vertical: 'middle', horizontal: 'center' } : { vertical: 'middle' };
+      cell.alignment = [1, 13, 21].includes(c) ? { vertical: 'middle', horizontal: 'center' } : { vertical: 'middle' };
       if (XL.money.includes(c)) cell.numFmt = '#,##0;[Red]-#,##0';
       if (XL.pct.includes(c)) cell.numFmt = '0.00%;[Red]-0.00%';
       if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
-      if (c === 16 && typeof v === 'number') {
-        cell.numFmt = '+#,##0;-#,##0;0';
-        if (v) cell.font = { ...font, bold: true, color: { argb: v > 0 ? 'FFC00000' : 'FF0070C0' } }; // 우리가 비싸면 빨강, 싸면 파랑
+      if (c === 18 && typeof v === 'number') {
+        // 가격차이 = 노출가 − 최저가 (수식). 색은 서식으로: 우리가 비싸면 빨강, 싸면 파랑 — 노출가를 고쳐도 맞게 바뀜
+        cell.value = { formula: `IF(O${r}="","",C${r}-O${r})`, result: v };
+        cell.numFmt = '[Red]+#,##0;[Blue]-#,##0;0';
+        cell.font = { ...font, bold: true };
       }
       if (mark && c >= 8 && c <= 12) cell.fill = fillOf(mark);                                      // 제안세팅 칸 색
     });
@@ -682,7 +715,7 @@ function renderBrowse() {
     <tr class="${it.own ? 'own' : ''}"><td class="center">${i + 1}</td>
       <td class="name">${link(cat, it)}${it.own ? '<span class="tag own">자사</span>' : ''}</td>
       <td class="left spec">${esc(specSummary(cat, it.a))}</td>
-      <td>${won(it.price)}</td><td class="${it.price > min ? 'up' : ''}">${it.price > min ? signed(it.price - min) : '최저'}</td>
+      <td>${won(it.price)}${it.mall ? `<div class="spec">${esc(mallTxt(it))}</div>` : ''}</td><td class="${it.price > min ? 'up' : ''}">${it.price > min ? signed(it.price - min) : '최저'}</td>
       <td class="center muted">${esc(it.sp.registration_month || '')}</td></tr>`).join('')
     || '<tr><td colspan="6" class="center muted">상품이 없습니다</td></tr>';
 }
@@ -696,6 +729,15 @@ drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (
 $('#cat-filter').addEventListener('change', renderCompare);
 $('#export').addEventListener('click', exportXlsx);
 $('#only-expensive').addEventListener('change', renderCompare);
+$('#open-only').checked = state.openOnly;
+$('#open-only').addEventListener('change', (e) => {
+  state.openOnly = e.target.checked;
+  try { localStorage.setItem('openOnly', state.openOnly ? 'Y' : 'N'); } catch { /* 무시 */ }
+  Object.values(state.db).forEach(setView);
+  paintStatus();
+  renderBrowseSpecs();
+  if (state.rows.length) renderCompare();
+});
 setupSelection();
 $('#clear').addEventListener('click', () => {
   state.rows = []; state.results = []; state.openRow = null; state.keep.clear(); input.value = '';
