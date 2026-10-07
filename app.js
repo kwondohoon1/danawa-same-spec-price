@@ -200,7 +200,7 @@ async function loadCat(cat) {
   const [p, s, o] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`),
     get(`${SRC}/latest/${cat}_open.csv`).catch(() => null)]);
   const prices = parseCSV(p), specs = parseCSV(s);
-  // 오픈마켓(11번가·G마켓·옥션·스마트스토어)만의 최저가·배송비·쇼핑몰
+  // 현금몰 제외(오픈마켓 + 백화점·종합몰) 최저가·배송비·쇼핑몰
   const openBy = {};
   if (o) {
     const m = parseCSV(o), at = (h) => m.head.indexOf(h);
@@ -232,19 +232,22 @@ function groupOf(items) {
   for (const k in groups) groups[k].sort((x, y) => x.price - y.price);
   return groups;
 }
-// 비교에 쓰는 상품 목록: 오픈마켓만이면 오픈마켓 최저가로 바꾸고 오픈마켓에 없는 상품은 뺀다
+// 비교에 쓰는 상품 목록: 현금몰 제외면 오픈마켓·종합몰 최저가(배송비 포함)로 바꾸고, 거기서 안 파는 상품은 뺀다
 function setView(d) {
   const open = state.openOnly && d.hasOpen;
-  d.items = open ? d.all.filter((it) => d.openBy[it.code]).map((it) => ({ ...it, ...d.openBy[it.code] })) : d.all;
+  d.items = open ? d.all.filter((it) => d.openBy[it.code]).map((it) => {
+    const o = d.openBy[it.code];
+    return { ...it, ...o, base: o.price, price: o.price + (o.ship || 0) };   // 비교는 배송비 포함가
+  }) : d.all;
   d.groups = open ? groupOf(d.items) : d.allGroups;
   d.byCode = {}; for (const it of d.items) d.byCode[it.code] = it;
   return d;
 }
 const shipTxt = (it) => (it.ship == null ? '' : it.ship ? `배송비 ${won(it.ship)}` : '무료배송');
-const mallTxt = (it) => [it.mall, shipTxt(it)].filter(Boolean).join(' · ');
+const mallTxt = (it) => [it.mall, it.ship ? `${won(it.base)} + 배송비 ${won(it.ship)}` : shipTxt(it)].filter(Boolean).join(' · ');
 
 const openActive = () => state.openOnly && Object.values(state.db).some((d) => d.hasOpen);
-const scopeTxt = () => (openActive() ? '<b>오픈마켓</b> 최저가' : '전체 쇼핑몰 최저가');
+const scopeTxt = () => (openActive() ? '<b>현금몰 제외 · 배송비 포함</b> 최저가' : '전체 쇼핑몰 최저가 (배송비 별도)');
 const paintStatus = () => { if (state.statusHead) $('#data-status').innerHTML = `${state.statusHead} · ${scopeTxt()}`; };
 async function loadAll() {
   const st = $('#data-status');
@@ -259,7 +262,7 @@ async function loadAll() {
     const when = at ? `${at.slice(0, 10)} ${at.slice(11, 16)}` : res[0][1].today;
     state.statusHead = `가격 데이터 <b>${when}</b> 수집 기준 · ${n.toLocaleString()}개 상품 불러옴`;
     paintStatus();
-    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 07~18시 매시 갱신, 가격은 배송비 별도). 오픈마켓 = 11번가·G마켓·옥션·네이버 스마트스토어 (현금몰·전문몰·종합몰 제외). 중고·해외구매·리퍼·벌크 제외.`;
+    $('#foot').innerHTML = `데이터: <a href="https://github.com/kwondohoon1/danawa-monitor-crawler" target="_blank" rel="noopener">danawa-monitor-crawler</a> (다나와 최저가, 07~18시 매시 갱신). 현금몰 제외 = 오픈마켓(11번가·G마켓·옥션·스마트스토어) + 백화점·홈쇼핑·종합몰, 가격은 배송비 포함 (카드/현금 동일 전문몰·일반 전문몰 제외). 중고·해외구매·리퍼·벌크 제외.`;
     renderBrowseSpecs();
     if (state.rows.length) renderCompare();
   } catch (e) {
@@ -554,8 +557,8 @@ function buildExportWorkbook() {
   ws.columns = XL.cols.map(([, width]) => ({ width }));
 
   ws.mergeCells('A1:B1');                                   // 수집 날짜·시각 (맨 위)
-  const scope = openActive() ? '다나와 오픈마켓 최저가' : '다나와 전체 쇼핑몰 최저가';
-  ws.getCell('A1').value = when ? `수집 ${when}  (${scope} · 배송비 별도)` : '수집 시각 확인 불가';
+  const scope = openActive() ? '다나와 현금몰 제외 최저가 · 배송비 포함' : '다나와 전체 쇼핑몰 최저가 · 배송비 별도';
+  ws.getCell('A1').value = when ? `수집 ${when}  (${scope})` : '수집 시각 확인 불가';
   ws.getCell('A1').font = { ...font, size: 11, bold: true };
   ws.getCell('C1').value = `노란색 = 인하 필요 · 빨간색 = 인상 · 받은 시각 ${now.slice(0, 10)} ${now.slice(11, 16)}`;
   ws.getCell('C1').font = { ...font, color: { argb: 'FF808080' } };
@@ -581,7 +584,7 @@ function buildExportWorkbook() {
       a.listing ? a.listing.code : '', a.model,
       a.price, R(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
       a.sug, R(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
-      low ? low.code : '', low ? low.name : '', low ? low.price : '', low ? low.mall || '' : '', low && low.ship != null ? low.ship : '',
+      low ? low.code : '', low ? low.name : '', low ? low.base ?? low.price : '', low ? low.mall || '' : '', low && low.ship != null ? low.ship : '',
       low ? a.price - low.price : '', lowUrl, a.filterUrl,
       a.verdict,
     ];
@@ -597,8 +600,8 @@ function buildExportWorkbook() {
       if (XL.pct.includes(c)) cell.numFmt = '0.00%;[Red]-0.00%';
       if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
       if (c === 18 && typeof v === 'number') {
-        // 가격차이 = 노출가 − 최저가 (수식). 색은 서식으로: 우리가 비싸면 빨강, 싸면 파랑 — 노출가를 고쳐도 맞게 바뀜
-        cell.value = { formula: `IF(O${r}="","",C${r}-O${r})`, result: v };
+        // 가격차이 = 노출가 − (최저가 + 배송비) (수식). 색은 서식으로: 우리가 비싸면 빨강, 싸면 파랑 — 노출가를 고쳐도 맞게 바뀜
+        cell.value = { formula: `IF(O${r}="","",C${r}-(O${r}+N(Q${r})))`, result: v };
         cell.numFmt = '[Red]+#,##0;[Blue]-#,##0;0';
         cell.font = { ...font, bold: true };
       }

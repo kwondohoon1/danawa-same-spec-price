@@ -44,7 +44,7 @@
             <option value="SSD">SSD</option>
             <option value="RAM">RAM</option>
           </select>
-          <label class="chk" title="11번가·G마켓·옥션·네이버 스마트스토어 가격만 비교 (현금몰·전문몰·종합몰 제외)"><input type="checkbox" id="open-only"> 오픈마켓만</label>
+          <label class="chk" title="오픈마켓(11번가·G마켓·옥션·스마트스토어)과 백화점·종합몰 가격만, 배송비 포함으로 비교 (카드/현금 동일 전문몰·일반 전문몰 제외)"><input type="checkbox" id="open-only"> 현금몰 제외</label>
           <label class="chk"><input type="checkbox" id="only-expensive"> 최저가보다 비싼 것만</label>
           <button id="export" type="button" class="primary">엑셀로 받기</button>
           <button id="clear" type="button" class="ghost">엑셀 지우기</button>
@@ -53,7 +53,7 @@
       <div class="summary" id="summary"></div>
       <p class="hint">엑셀처럼 <b>셀을 드래그</b>하거나 <b>열 제목을 클릭</b>해 선택한 뒤 <kbd>Ctrl</kbd>+<kbd>C</kbd> → 엑셀에 붙여넣기. 숫자는 쉼표 없이 복사됩니다.
         제안 노출가 열 전체를 복사해 <em>정산가세팅</em> 입력가(E18)에 붙여넣으면 행 순서가 그대로 맞습니다. 상품명을 누르면 다나와로 이동합니다.
-        <b>엑셀로 받기</b>는 단가표 <em>최저가비교</em> 시트 양식(A~U열, 4행부터 정산가세팅 순서)으로 내려받습니다. 제안세팅은 노출가만 숫자이고 나머지는 수식이라 노출가를 고치면 최대혜택가·마진·마진율이 다시 계산됩니다. 노란색 = 인하 필요 · 빨간색 = 인상, 가격차이(노출가 − 최저가 수식) 빨강 = 우리가 비쌈 · 파랑 = 우리가 쌈. 최저가 옆에 쇼핑몰·배송비가 들어갑니다(가격은 배송비 별도). <b>오픈마켓만</b>을 켜면 11번가·G마켓·옥션·스마트스토어 가격만 비교합니다(현금몰·전문몰·종합몰 제외). 판정 버튼(<b>인하</b>·<b>인상</b>)을 누르면 그 상품은 현재 노출가 그대로 유지로 바뀌고 엑셀에도 그대로 들어갑니다(다시 누르면 원래대로). <b>다나와 필터 ↗</b>는 우리 제품 기준 스펙으로 다나와 목록을 거른 링크입니다(열면 낮은가격순을 한 번 눌러 주세요).
+        <b>엑셀로 받기</b>는 단가표 <em>최저가비교</em> 시트 양식(A~U열, 4행부터 정산가세팅 순서)으로 내려받습니다. 제안세팅은 노출가만 숫자이고 나머지는 수식이라 노출가를 고치면 최대혜택가·마진·마진율이 다시 계산됩니다. 노란색 = 인하 필요 · 빨간색 = 인상, 가격차이(노출가 − (최저가 + 배송비) 수식) 빨강 = 우리가 비쌈 · 파랑 = 우리가 쌈. 최저가 옆에 쇼핑몰·배송비가 들어갑니다. <b>현금몰 제외</b>(기본)는 오픈마켓·백화점·종합몰 가격만, 배송비를 더한 가격으로 비교합니다. 판정 버튼(<b>인하</b>·<b>인상</b>)을 누르면 그 상품은 현재 노출가 그대로 유지로 바뀌고 엑셀에도 그대로 들어갑니다(다시 누르면 원래대로). <b>다나와 필터 ↗</b>는 우리 제품 기준 스펙으로 다나와 목록을 거른 링크입니다(열면 낮은가격순을 한 번 눌러 주세요).
         <span id="copy-toast" class="toast" hidden></span></p>
       <div class="table-scroll">
         <table class="grid xl" id="compare-table">
@@ -100,6 +100,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script src="app.js?v=20261007a"></script>
+  <script src="app.js?v=20261007b"></script>
 </body>
 </html>
