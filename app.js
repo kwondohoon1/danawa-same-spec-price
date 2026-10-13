@@ -117,6 +117,7 @@ function makeRule(cat, a) {
     if (a.cl) { parts.push(`CL${a.cl} 이하`); tests.push((b) => b.cl && b.cl <= a.cl); }
     if (a.rgb) { parts.push('RGB'); tests.push((b) => b.rgb); }
   }
+  if (a.from) parts.push(`(${a.from})`);
   return { label: parts.join(' · '), test: (b) => tests.every((t) => t(b)) };
 }
 
@@ -305,9 +306,10 @@ function extractRows(wb) {
       for (let r = h + 1; r < aoa.length; r++) {
         const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
         if (!model) break; // 첫 표만 읽는다 (정산가세팅 아래쪽 '자사몰 기준' 표 제외)
-        if (!(price > 0)) continue;
         const num = (i) => (i >= 0 ? Number(aoa[r][i]) || null : null);
-        out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model, price,
+        // 노출가가 비어 있으면 신규 상품: 경쟁 최저가로 노출가를 제안만 한다
+        out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
+          price: price > 0 ? price : null,
           cost: num(iCost), settle: num(iSettle), maxb: num(iMax) });
       }
       if (out.length) { readGConditions(aoa, h); return out; }
@@ -364,14 +366,18 @@ function catOf(row) {
   if (/DDR\d|\bD\d-/i.test(row.model)) return 'ram';
   return 'ssd';
 }
-function findListing(cat, row, base) {
+const LINE_WORD = /^(?=.*[A-Z가-힣])[0-9A-Z가-힣+-]{3,}$/;
+const GENERIC_WORD = /^(A?RGB|OC|G?D(DR)?\d+X?|WHITE|BLACK|SILVER|화이트|블랙|실버|TRIPLE|DUAL|SINGLE|FAN|패키지|UDIMM|\d+(GB|TB)|CL\d+|.*\d+GB.*|(DDR\d-)?\d{4,5})$/;
+function findListing(cat, row, base, anyCap = false) {
   const d = state.db[cat]; if (!d) return null;
-  const want = tokens(row.model), cap = gb(row.model);
+  const cap = gb(row.model), want = tokens(row.model).filter((t) => !anyCap || !gb(t));
   let best = null, bestScore = 0;
   for (const it of base ? d.allGroups[base] || [] : d.all) {
     const have = new Set(tokens(it.name));
     let hit = 0; for (const t of want) if (have.has(t)) hit++;
-    if (cat !== 'gpu' && cap && gb(it.name) !== cap) continue;
+    // 모델 라인 이름(NITRO·PREDATOR·KP270 등)이 다르면 나머지가 같아도 다른 상품
+    if (want.some((t) => !have.has(t) && LINE_WORD.test(t) && !GENERIC_WORD.test(t))) continue;
+    if (cat !== 'gpu' && cap && !anyCap && gb(it.name) !== cap) continue;
     const score = hit / want.length + (it.own ? 0.05 : 0);
     if (score > bestScore) { bestScore = score; best = it; }
   }
@@ -379,8 +385,18 @@ function findListing(cat, row, base) {
 }
 
 function matchRow(row) {
-  const cat = catOf(row), nameA = attrsFromName(cat, row.model);
-  return { row, cat, nameA, listing: findListing(cat, row, nameA.base) };
+  const cat = catOf(row);
+  let nameA = attrsFromName(cat, row.model);
+  const listing = findListing(cat, row, nameA.base);
+  const cap = gb(row.model);
+  if (!listing && cat === 'ssd' && cap) {
+    const sib = findListing(cat, row, '', true);
+    if (sib && sib.a.base) {
+      const parts = sib.a.base.split(' · '); parts[parts.length - 1] = sizeLabel(cap);
+      nameA = { ...sib.a, base: parts.join(' · '), from: `${sizeLabel(gb(sib.name))} 상품 스펙 참고` };
+    }
+  }
+  return { row, cat, nameA, listing };
 }
 
 function analyze({ row, cat, nameA, listing }, ownCodes) {
@@ -398,12 +414,19 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const others = sameOther ? (d.byCode[listing.code] ? [d.byCode[listing.code]] : [])
     : group.filter((it) => !it.own && rule.test(it.a) && !ownCodes.has(it.code));
   const low = others[0] || null;
-  const diff = low ? row.price - low.price : null;
+  const fresh = row.price == null;                      // 노출가 없는 신규 상품
+  const diff = low && !fresh ? row.price - low.price : null;
   const cheaper = others.filter((it) => it.price < row.price).length;
 
   // 제안 노출가
   let sug = row.price, verdict = '비교 불가', vcls = 'muted', be = null;
-  if (low) {
+  if (fresh) {
+    sug = null; verdict = '비교 불가';
+    if (low) {
+      sug = fl10(low.price * TARGET); verdict = '신규'; vcls = 'ok';
+      if (row.cost) { be = breakeven2nd(row.cost, g); if (settleAt2nd(sug, g) < row.cost) { sug = be; verdict = '손실·보류'; vcls = 'warn'; } }
+    }
+  } else if (low) {
     const ratio = row.price / low.price;
     if (ratio >= TARGET && ratio <= KEEP_HI) { verdict = '유지'; vcls = 'ok'; }
     else {
@@ -416,13 +439,13 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
       if (settleAt2nd(sug, g) < row.cost) { sug = row.price; verdict = '손실·보류'; vcls = 'warn'; }
     }
   }
-  const sugSettle = settleAt2nd(sug, g);
-  const curSettle = row.settle || settleAt2nd(row.price, g);
+  const sugSettle = sug == null ? null : settleAt2nd(sug, g);
+  const curSettle = fresh ? null : row.settle || settleAt2nd(row.price, g);
   const filterUrl = danawaFilterUrl(cat, a, sameOther ? listing : null);
   return { ...row, catKey: cat, a, rule, listing, group, others, low, diff, pct: low ? diff / low.price : null,
-    rank: low ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: sug - row.price, verdict, vcls, be,
-    sugSettle, sugMargin: row.cost ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl,
-    curMax: row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: gMaxBenefit(sug, g) };
+    rank: low && !fresh ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: fresh ? 0 : sug - row.price, verdict, vcls, be, fresh,
+    sugSettle, sugMargin: row.cost && sugSettle != null ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl,
+    curMax: fresh ? null : row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: sug == null ? null : gMaxBenefit(sug, g) };
 }
 
 // ---------- 직접 유지 ----------
@@ -466,12 +489,12 @@ function renderCompare() {
     const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
     return `<tr data-r="${i}">
       ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span><span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
-      ${td(1, a.price, `<b>${won(a.price)}</b>`)}
+      ${td(1, a.price ?? '', a.fresh ? '<span class="muted">미입력</span>' : `<b>${won(a.price)}</b>`)}
       ${td(2, a.listing ? a.listing.price : '', dnw)}
       ${td(3, a.low ? a.low.price : '', low)}
       ${td(4, a.diff ?? '', `<span class="${cls}">${a.diff == null ? '-' : signed(a.diff)}</span><div class="spec">${pctTxt(a.pct)}${a.rank ? ` · ${a.rank}/${a.total}위` : ''}</div>`)}
-      ${td(5, a.sug, `<b>${won(a.sug)}</b>${sugNote}<div>${badge}</div>`, 'sugc')}
-      ${td(6, Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
+      ${td(5, a.sug ?? '', `<b>${won(a.sug)}</b>${sugNote}<div>${badge}</div>`, 'sugc')}
+      ${td(6, a.sugSettle == null ? '' : Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
   }).join('') || '<tr><td colspan="7" class="center muted">표시할 모델이 없습니다</td></tr>';
   tb.querySelectorAll('[data-keep]').forEach((b) => b.addEventListener('click', () => {
@@ -490,6 +513,7 @@ function renderCompare() {
     <div class="tile"><b class="down">${cnt('인상')}</b><span>인상 제안</span></div>
     <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지${all.some((a) => a.manual) ? ` (직접 ${all.filter((a) => a.manual).length})` : ' (−0.5~−1%)'}</span></div>
     <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
+    ${cnt('신규') ? `<div class="tile"><b class="ok">${cnt('신규')}</b><span>신규 (노출가 제안)</span></div>` : ''}
     <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
 }
 
@@ -498,11 +522,11 @@ function detailRow(a) {
     const same = a.sameOther && it.code === a.listing.code;
     const mine = it.own || (state.ownCodes.has(it.code) && !same);
     const ok = !mine && a.rule.test(it.a);
-    const d = a.price - it.price;
+    const d = a.fresh ? null : a.price - it.price;
     return `<tr class="${mine ? 'own' : ok ? '' : 'dim'}"><td class="center">${i + 1}</td>
       <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}</td>
       <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
-      <td>${won(it.price)}${it.mall ? `<div class="spec">${esc(mallTxt(it))}</div>` : ''}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
+      <td>${won(it.price)}${it.mall ? `<div class="spec">${esc(mallTxt(it))}</div>` : ''}</td><td class="${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d == null ? '-' : signed(d)}</td><td class="muted">${esc(it.date)}</td></tr>`;
   }).join('');
   return `<tr class="detail"><td colspan="7"><div class="spec" style="margin-bottom:6px">경쟁 조건: <b>${esc(a.rule.label)}</b> · 회색 = 조건 밖(기본 스펙만 같음)</div>
     <table class="grid"><thead><tr><th>#</th><th class="left">${esc(a.a.base)} 전체 상품</th><th class="left">스펙</th><th>다나와 최저가</th><th>엑셀 노출가 − 이 상품</th><th>가격일</th></tr></thead><tbody>${rows}</tbody></table></td></tr>`;
@@ -578,18 +602,19 @@ function buildExportWorkbook() {
 
   state.results.forEach((a, i) => {
     const r = 4 + i, low = a.low, cost = a.cost || null;
-    const curM = cost ? a.curSettle - cost : null, sugM = cost ? a.sugSettle - cost : null;
+    const curM = cost && a.curSettle != null ? a.curSettle - cost : null, sugM = cost && a.sugSettle != null ? a.sugSettle - cost : null;
+    const num = (v) => (v == null ? '' : R(v));
     const lowUrl = low ? danawaUrl(a.catKey, low.code) : '';
     const vals = [
       a.listing ? a.listing.code : '', a.model,
-      a.price, R(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
-      a.sug, R(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
+      a.price ?? '', num(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
+      a.sug ?? '', num(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
       low ? low.code : '', low ? low.name : '', low ? low.base ?? low.price : '', low ? low.mall || '' : '', low && low.ship != null ? low.ship : '',
-      low ? a.price - low.price : '', lowUrl, a.filterUrl,
+      low ? (a.fresh ? '' : a.price - low.price) : '', lowUrl, a.filterUrl,
       a.verdict,
     ];
     const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 19: lowUrl, 20: a.filterUrl };
-    const mark = a.verdict === '인하' ? 'FFFF00' : a.verdict === '인상' ? 'FF8080' : null;   // 인하 노랑 · 인상 빨강
+    const mark = a.verdict === '인하' ? 'FFFF00' : a.verdict === '인상' ? 'FF8080' : a.verdict === '신규' ? 'BDD7EE' : null;   // 인하 노랑 · 인상 빨강 · 신규 파랑
     vals.forEach((v, j) => {
       const c = j + 1, cell = ws.getCell(r, c);
       cell.value = urls[c] && v !== '' ? { text: String(v), hyperlink: urls[c] } : v;
@@ -599,9 +624,10 @@ function buildExportWorkbook() {
       if (XL.money.includes(c)) cell.numFmt = '#,##0;[Red]-#,##0';
       if (XL.pct.includes(c)) cell.numFmt = '0.00%;[Red]-0.00%';
       if (XL.links.includes(c) && urls[c] && v !== '') cell.font = { ...font, color: { argb: 'FF0563C1' }, underline: true };
-      if (c === 18 && typeof v === 'number') {
+      if (c === 18 && low) {
         // 가격차이 = 노출가 − (최저가 + 배송비) (수식). 색은 서식으로: 우리가 비싸면 빨강, 싸면 파랑 — 노출가를 고쳐도 맞게 바뀜
-        cell.value = { formula: `IF(O${r}="","",C${r}-(O${r}+N(Q${r})))`, result: v };
+        // 신규(노출가 미입력)도 수식을 넣어 두면 노출가를 적는 순간 계산된다
+        cell.value = { formula: `IF(OR(C${r}="",O${r}=""),"",C${r}-(O${r}+N(Q${r})))`, result: v };
         cell.numFmt = '[Red]+#,##0;[Blue]-#,##0;0';
         cell.font = { ...font, bold: true };
       }
@@ -609,6 +635,7 @@ function buildExportWorkbook() {
     });
     ws.getCell(r, 8).font = { ...ws.getCell(r, 8).font, bold: true };
     // 제안세팅 I~L 은 수식 (result 는 열자마자 보이도록 미리 계산한 값)
+    if (a.sug == null) return;
     const f = gFormulas(`H${r}`, `J${r}`, state.g);
     ws.getCell(r, 9).value = { formula: f.max, result: R(a.sugMax) };
     ws.getCell(r, 10).value = { formula: `IF(E${r}="","",E${r})`, result: cost ?? '' };
