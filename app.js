@@ -198,9 +198,11 @@ async function latestCollectedAt() {
 }
 
 async function loadCat(cat) {
-  const [p, s, o] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`),
-    get(`${SRC}/latest/${cat}_open.csv`).catch(() => null)]);
+  const [p, s, o, sn] = await Promise.all([get(`${SRC}/latest/${cat}.csv`), get(`${SRC}/specs/${cat}_specs.csv`),
+    get(`${SRC}/latest/${cat}_open.csv`).catch(() => null), get(`${SRC}/specs/${cat}_specs_new.csv`).catch(() => null)]);
   const prices = parseCSV(p), specs = parseCSV(s);
+  // 스펙 전체 수집은 하루 한 번 → 그날 새로 등록된 상품은 매시 받는 _specs_new.csv 에 있다
+
   // 현금몰 제외(오픈마켓 + 백화점·종합몰) 최저가·배송비·쇼핑몰
   const openBy = {};
   if (o) {
@@ -212,7 +214,9 @@ async function loadCat(cat) {
   }
   const dates = prices.head.slice(2);
   const specBy = {};
-  for (const r of specs.rows) { const o = {}; specs.head.forEach((h, i) => (o[h] = r[i])); specBy[o.product_code] = o; }
+  for (const m of sn ? [specs, parseCSV(sn)] : [specs]) {
+    for (const r of m.rows) { const o = {}; m.head.forEach((h, i) => (o[h] = r[i])); specBy[o.product_code] ||= o; }
+  }
   const items = [];
   for (const r of prices.rows) {
     const code = r[0], name = r[1];
@@ -366,14 +370,19 @@ function catOf(row) {
   if (/DDR\d|\bD\d-/i.test(row.model)) return 'ram';
   return 'ssd';
 }
+const NOISE_WORD = /^(UDIMM|[A-Z가-힣]|패키지|\d+G?B?X\d)$/;
+const COLOR_WORD = /^(WHITE|BLACK|SILVER|화이트|블랙|실버)$/;
 const LINE_WORD = /^(?=.*[A-Z가-힣])[0-9A-Z가-힣+-]{3,}$/;
 const GENERIC_WORD = /^(A?RGB|OC|G?D(DR)?\d+X?|WHITE|BLACK|SILVER|화이트|블랙|실버|TRIPLE|DUAL|SINGLE|FAN|패키지|UDIMM|\d+(GB|TB)|CL\d+|.*\d+GB.*|(DDR\d-)?\d{4,5})$/;
 function findListing(cat, row, base, anyCap = false) {
   const d = state.db[cat]; if (!d) return null;
-  const cap = gb(row.model), want = tokens(row.model).filter((t) => !anyCap || !gb(t));
+  // 점수에서 빼는 표기: UDIMM·한 글자·'패키지'·킷 표기(16GBx2) — 다나와와 엑셀이 다르게 적음
+  const cap = gb(row.model), all = tokens(row.model).filter((t) => (!anyCap || !gb(t)) && !NOISE_WORD.test(t));
   let best = null, bestScore = 0;
   for (const it of base ? d.allGroups[base] || [] : d.all) {
     const have = new Set(tokens(it.name));
+    // 다나와 이름에 색 표기가 없으면 엑셀의 색(블랙·화이트)은 비교하지 않는다 (KingBank KRRB/KRRW 처럼 코드에 색이 들어감)
+    const want = [...have].some((t) => COLOR_WORD.test(t)) ? all : all.filter((t) => !COLOR_WORD.test(t));
     let hit = 0; for (const t of want) if (have.has(t)) hit++;
     // 모델 라인 이름(NITRO·PREDATOR·KP270 등)이 다르면 나머지가 같아도 다른 상품
     if (want.some((t) => !have.has(t) && LINE_WORD.test(t) && !GENERIC_WORD.test(t))) continue;
