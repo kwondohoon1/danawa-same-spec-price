@@ -368,8 +368,10 @@ function readConditions(aoa, limit, k) {
   }
   return { g, ok: found >= 8 };
 }
-// 기준 마켓 표의 행 + 그 마켓 조건. 하이마트는 카드할인을 받은 최대혜택가로 다나와와 비교
-const withMarket = (row, mk, conds) => ({ ...row, mk, g: (conds[mk] || { g: state.g }).g, cmpMax: mk === 'himart' });
+// 기준 마켓 표의 행 + 그 마켓 조건. 다나와와는 모든 마켓을 노출가(카드할인 전)로 비교한다
+// — 다나와 목록 가격도 카드할인 전이라서. 최대혜택가로 비교하려면 CMP_MAX 에 마켓을 넣는다.
+const CMP_MAX = new Set();
+const withMarket = (row, mk, conds) => ({ ...row, mk, g: (conds[mk] || { g: state.g }).g, cmpMax: CMP_MAX.has(mk) });
 
 // 올린 엑셀에서 기준(제품별 노란색 표시 / 한 마켓) 표를 읽는다 (기준을 바꾸면 다시 읽음)
 function loadRows(keepState = false) {
