@@ -332,6 +332,7 @@ function readTables(wb) {
       const mk = Object.keys(MARKETS).find((k) => above.some((v) => MARKETS[k].table.test(v))) || null;
       const col = (t) => head.indexOf(t);
       const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가'), iMax = col('최대혜택가');
+      const iState = col('상태');                       // 세팅 / 단종 / 보류 (드롭다운)
       const rows = [];
       for (let r = h + 1; r < aoa.length; r++) {
         const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
@@ -340,7 +341,8 @@ function readTables(wb) {
         // 노출가가 비어 있으면 신규 상품: 경쟁 최저가로 노출가를 제안만 한다
         rows.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
           price: price > 0 ? price : null, cost: num(iCost), settle: num(iSettle), maxb: num(iMax),
-          marked: state.yellow ? state.yellow.has(`${name}!${top + r + 1}`) : false });
+          status: iState >= 0 ? squash(aoa[r][iState]) : '',
+          marked: (iState >= 0 && squash(aoa[r][iState]) === '세팅') || (state.yellow ? state.yellow.has(`${name}!${top + r + 1}`) : false) });
       }
       if (rows.length) { tables.push({ mk, rows }); h += rows.length; }
     }
@@ -361,7 +363,7 @@ function readConditions(aoa, limit, k) {
   for (let r = 0; r < limit; r++) {
     const row = aoa[r] || [];
     if (gCol < 0) { gCol = row.findIndex((v) => MARKETS[k].col.test(squash(v))); if (gCol >= 0) continue; }
-    const key = G_LABELS[squash(row[0])];
+    const key = row.slice(0, 4).map((v) => G_LABELS[squash(v)]).find(Boolean);   // 항목 이름 (앞에 열이 끼워져 있어도)
     if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { g[key] = Number(row[gCol]); found++; }
   }
   return { g, ok: found >= 8 };
@@ -377,6 +379,8 @@ function loadRows(keepState = false) {
     const { tables, conds } = readTables(state.wb);
     if (!tables.length) throw new Error("'모델명'과 '노출가 (2차혜택가)' 열이 있는 표를 찾지 못했습니다");
     const titled = tables.filter((t) => t.mk);
+    // 어느 표에서든 상태가 '단종'인 제품은 판정만 '단종' (행은 남겨 엑셀 붙여넣기 순서를 지킴)
+    const gone = new Set(tables.flatMap((t) => t.rows.filter((r) => r.status === '단종').map((r) => r.model)));
     let rows, note;
     if (state.market === 'mark') {
       // 제품마다 노란색으로 칠한 표가 기준. 표들은 같은 순서(같은 행 = 같은 제품)
@@ -390,10 +394,10 @@ function loadRows(keepState = false) {
         const t = pick || fallback;
         const row = withMarket(t.rows[i], t.mk, conds);
         row.unmarked = !pick; row.choices = cands.map((c) => c.mk);
-        count[row.unmarked ? '미표시' : MARKETS[t.mk].label] = (count[row.unmarked ? '미표시' : MARKETS[t.mk].label] || 0) + 1;
         return row;
       });
-      note = `<b>제품별 기준</b> (노란색 표시) ${Object.entries(count).map(([k, n]) => k === '미표시' ? `<span class="err">미표시 ${n} → ${MARKETS[fallback.mk].label}</span>` : `${k} ${n}`).join(' · ')}`;
+      for (const r of rows) { if (gone.has(r.model)) continue; const k = r.unmarked ? '미표시' : MARKETS[r.mk].label; count[k] = (count[k] || 0) + 1; }
+      note = `<b>제품별 기준</b> (상태 '세팅' · 노란색) ${Object.entries(count).map(([k, n]) => k === '미표시' ? `<span class="err">미표시 ${n} → ${MARKETS[fallback.mk].label}</span>` : `${k} ${n}`).join(' · ')}`;
     } else {
       const t = titled.length ? titled.find((x) => x.mk === state.market) : tables[0];
       if (!t) throw new Error(`'${mkt().label} 기준' 표를 찾지 못했습니다`);
@@ -401,6 +405,8 @@ function loadRows(keepState = false) {
       note = `<b>${mkt().label} 기준</b>${conds[state.market] && conds[state.market].ok ? '' : ` · <span class="err">${mkt().label} 조건을 못 찾아 기본값 사용</span>`}`;
     }
     state.g = (conds[state.market] || conds.g || { g: state.g }).g;
+    for (const r of rows) if (gone.has(r.model)) r.gone = true;
+    if (gone.size) note += ` · <span class="muted">단종 ${gone.size}</span>`;
     state.rows = rows;
     if (!keepState) { state.keep.clear(); state.openRow = null; }
     fs.innerHTML = `<b>${esc(state.fileName)}</b> · ${rows.length}개 모델 · ${note} <span class="muted">(브라우저 메모리에만 있음)</span>`;
@@ -535,6 +541,7 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
       if (settleAt2nd(sug, g) < row.cost) { sug = row.price; verdict = '손실·보류'; vcls = 'warn'; }
     }
   }
+  if (row.gone) { sug = row.price; verdict = '단종'; vcls = 'muted'; }   // 엑셀 상태 '단종' — 비교만 보여 주고 제안 안 함
   const sugSettle = sug == null ? null : settleAt2nd(sug, g);
   const curSettle = fresh ? null : row.settle || settleAt2nd(row.price, g);
   const filterUrl = danawaFilterUrl(cat, a, sameOther ? listing : null);
@@ -574,7 +581,7 @@ function renderCompare() {
     const cls = a.diff > 0 ? 'up' : a.diff < 0 ? 'down' : '';
     const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
     // 제품별 기준 표시 — 누르면 다음 표로 (G마켓 → 자사몰 → 하이마트)
-    const mkTag = state.market !== 'mark' ? '' : `<button type="button" class="mkbtn${a.unmarked ? ' unmarked' : ''}" data-mk="${i}" title="${a.unmarked ? '노란색 표시가 없어 기본 기준으로 계산 · ' : ''}누르면 기준 표를 바꿉니다">${MARKETS[a.mk].label}${a.unmarked ? '?' : ''}</button>`;
+    const mkTag = state.market !== 'mark' ? '' : `<button type="button" class="mkbtn${a.unmarked ? ' unmarked' : ''}" data-mk="${i}" title="${a.unmarked ? "상태 '세팅'(노란색) 표시가 없어 기본 기준으로 계산 · " : ''}누르면 기준 표를 바꿉니다">${MARKETS[a.mk].label}${a.unmarked ? '?' : ''}</button>`;
     const shared = a.sameOther;
     const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
     const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>${a.low.mall ? `<div class="spec">${esc(mallTxt(a.low))}</div>` : ''}` : '<span class="muted">동일스펙 없음</span>';
@@ -619,7 +626,8 @@ function renderCompare() {
     <div class="tile"><b class="ok">${cnt('유지')}</b><span>유지${all.some((a) => a.manual) ? ` (직접 ${all.filter((a) => a.manual).length})` : ' (−0.5~−1%)'}</span></div>
     <div class="tile"><b class="warn">${cnt('손실·보류')}</b><span>손실·보류</span></div>
     ${cnt('신규') ? `<div class="tile"><b class="ok">${cnt('신규')}</b><span>신규 (노출가 제안)</span></div>` : ''}
-    <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>`;
+    <div class="tile"><b>${cnt('비교 불가')}</b><span>비교 대상 없음</span></div>
+    ${cnt('단종') ? `<div class="tile"><b class="muted">${cnt('단종')}</b><span>단종</span></div>` : ''}`;
 }
 
 function detailRow(a) {
