@@ -21,7 +21,8 @@ const G_LABELS = { 'MD쿠폰': 'md', '선택쿠폰': 'sel', '선택쿠폰셀러�
 const state = { db: {}, rows: [], g: { ...G_DEFAULT }, gFromExcel: false, openRow: null, results: [], openOnly: true };
 try { state.openOnly = localStorage.getItem('openOnly') !== 'N'; } catch { /* 저장소 막힘 → 기본값 */ }
 // 기준 마켓: 정산가세팅의 'G마켓 기준' 표 + 마켓 조건 G마켓·옥션 열, 또는 '자사몰 기준' 표 + 자사몰 열
-const MARKETS = { g: { label: 'G마켓', table: /G마켓기준/, col: /^G마켓/ }, own: { label: '자사몰', table: /자사몰기준/, col: /^자사몰/ } };
+const MARKETS = { g: { label: 'G마켓', table: /G마켓기준/, col: /^G마켓/ }, own: { label: '자사몰', table: /자사몰기준/, col: /^자사몰/ },
+  himart: { label: '하이마트', table: /하이마트기준/, col: /^하이마트/ } };
 state.market = 'g';
 try { if (MARKETS[localStorage.getItem('market')]) state.market = localStorage.getItem('market'); } catch { /* 기본값 */ }
 const mkt = () => MARKETS[state.market];
@@ -317,7 +318,7 @@ function extractRows(wb) {
   for (const name of order) {
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: true });
     // 표 제목('G마켓 기준'·'자사몰 기준')이 있는 시트면 기준 마켓의 표만, 없으면 첫 표
-    const titled = aoa.slice(0, 120).some((r) => r.some((v) => /^(G마켓|자사몰)기준$/.test(squash(v))));
+    const titled = aoa.slice(0, 120).some((r) => r.some((v) => /^(G마켓|자사몰|하이마트)기준$/.test(squash(v))));
     for (let h = 0; h < Math.min(aoa.length, 120); h++) {
       const head = aoa[h].map(squash);
       if (titled && !((aoa[h - 1] || []).concat(aoa[h - 2] || [])).some((v) => mkt().table.test(squash(v)))) continue;
