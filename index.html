@@ -38,6 +38,10 @@
       <div class="section-head">
         <h2>자사 제품 vs 동일스펙 최저가</h2>
         <div class="controls">
+          <select id="market" title="정산가세팅의 어느 표·마켓 조건으로 계산할지 (G마켓 행사 끝나면 자사몰)">
+            <option value="g">G마켓 기준</option>
+            <option value="own">자사몰 기준</option>
+          </select>
           <select id="cat-filter">
             <option value="">전체 카테고리</option>
             <option value="VGA">그래픽카드</option>
@@ -66,7 +70,7 @@
               <th data-c="3">동일스펙 최저가</th>
               <th data-c="4">차이<br><small>· 순위</small></th>
               <th data-c="5">제안 노출가<br><small>(최저가 −1%)</small></th>
-              <th data-c="6">제안 시 정산가<br><small>(G마켓 · 마진)</small></th>
+              <th data-c="6">제안 시 정산가<br><small id="settle-head">(G마켓 · 마진)</small></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -100,6 +104,6 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-  <script src="app.js?v=20261014a"></script>
+  <script src="app.js?v=20261019a"></script>
 </body>
 </html>

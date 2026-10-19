@@ -20,6 +20,11 @@ const G_LABELS = { 'MD쿠폰': 'md', '선택쿠폰': 'sel', '선택쿠폰셀러�
 
 const state = { db: {}, rows: [], g: { ...G_DEFAULT }, gFromExcel: false, openRow: null, results: [], openOnly: true };
 try { state.openOnly = localStorage.getItem('openOnly') !== 'N'; } catch { /* 저장소 막힘 → 기본값 */ }
+// 기준 마켓: 정산가세팅의 'G마켓 기준' 표 + 마켓 조건 G마켓·옥션 열, 또는 '자사몰 기준' 표 + 자사몰 열
+const MARKETS = { g: { label: 'G마켓', table: /G마켓기준/, col: /^G마켓/ }, own: { label: '자사몰', table: /자사몰기준/, col: /^자사몰/ } };
+state.market = 'g';
+try { if (MARKETS[localStorage.getItem('market')]) state.market = localStorage.getItem('market'); } catch { /* 기본값 */ }
+const mkt = () => MARKETS[state.market];
 const $ = (s) => document.querySelector(s);
 const won = (n) => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('ko-KR'));
 const signed = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(Math.round(n)).toLocaleString('ko-KR');
@@ -281,17 +286,29 @@ function readExcel(file) {
   const reader = new FileReader();
   reader.onload = (ev) => {
     try {
-      const wb = XLSX.read(ev.target.result, { type: 'array' });
-      const rows = extractRows(wb);
-      if (!rows.length) throw new Error("'모델명'과 '노출가 (2차혜택가)' 열이 있는 시트를 찾지 못했습니다");
-      state.rows = rows;
-      fs.innerHTML = `<b>${esc(file.name)}</b> · ${rows.length}개 모델 읽음${state.gFromExcel ? ' · G마켓 조건 반영' : ' · <span class="err">G마켓 조건을 못 찾아 기본값 사용</span>'} <span class="muted">(브라우저 메모리에만 있음)</span>`;
-      renderCompare();
+      state.wb = XLSX.read(ev.target.result, { type: 'array' }); state.fileName = file.name;
+      loadRows();
     } catch (e) {
       fs.innerHTML = `<span class="err">엑셀을 읽지 못했습니다: ${esc(e.message)}</span>`;
     }
   };
   reader.readAsArrayBuffer(file);
+}
+// 올린 엑셀에서 기준 마켓의 표를 읽는다 (기준 마켓을 바꾸면 다시 읽음)
+function loadRows() {
+  const fs = $('#file-status');
+  if (!state.wb) return;
+  try {
+    const rows = extractRows(state.wb);
+    if (!rows.length) throw new Error(`'모델명'과 '노출가 (2차혜택가)' 열이 있는 ${mkt().label} 기준 표를 찾지 못했습니다`);
+    state.rows = rows; state.keep.clear(); state.openRow = null;
+    const L = mkt().label;
+    fs.innerHTML = `<b>${esc(state.fileName)}</b> · <b>${L} 기준</b> ${rows.length}개 모델 읽음${state.gFromExcel ? ` · ${L} 조건 반영` : ` · <span class="err">${L} 조건을 못 찾아 기본값 사용</span>`} <span class="muted">(브라우저 메모리에만 있음)</span>`;
+    renderCompare();
+  } catch (e) {
+    state.rows = []; state.results = []; $('#compare').hidden = true;
+    fs.innerHTML = `<span class="err">엑셀을 읽지 못했습니다: ${esc(e.message)}</span>`;
+  }
 }
 
 const squash = (v) => String(v ?? '').replace(/\s+/g, '');
@@ -299,8 +316,11 @@ function extractRows(wb) {
   const order = [...wb.SheetNames].sort((a, b) => (b === '정산가세팅') - (a === '정산가세팅'));
   for (const name of order) {
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: true });
-    for (let h = 0; h < Math.min(aoa.length, 60); h++) {
+    // 표 제목('G마켓 기준'·'자사몰 기준')이 있는 시트면 기준 마켓의 표만, 없으면 첫 표
+    const titled = aoa.slice(0, 120).some((r) => r.some((v) => /^(G마켓|자사몰)기준$/.test(squash(v))));
+    for (let h = 0; h < Math.min(aoa.length, 120); h++) {
       const head = aoa[h].map(squash);
+      if (titled && !((aoa[h - 1] || []).concat(aoa[h - 2] || [])).some((v) => mkt().table.test(squash(v)))) continue;
       const iModel = head.indexOf('모델명');
       const iPrice = head.findIndex((v) => /^노출가\(2차/.test(v));
       if (iModel < 0 || iPrice < 0) continue;
@@ -309,7 +329,7 @@ function extractRows(wb) {
       const out = [];
       for (let r = h + 1; r < aoa.length; r++) {
         const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
-        if (!model) break; // 첫 표만 읽는다 (정산가세팅 아래쪽 '자사몰 기준' 표 제외)
+        if (!model) break; // 표 하나만 읽는다 (빈 모델 행에서 멈춤)
         const num = (i) => (i >= 0 ? Number(aoa[r][i]) || null : null);
         // 노출가가 비어 있으면 신규 상품: 경쟁 최저가로 노출가를 제안만 한다
         out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
@@ -321,13 +341,15 @@ function extractRows(wb) {
   }
   return [];
 }
-// '마켓 조건' 표에서 G마켓·옥션 열 값을 읽는다
+// '마켓 조건' 표에서 기준 마켓 열(G마켓·옥션 / 자사몰) 값을 읽는다
 function readGConditions(aoa, limit) {
-  state.g = { ...G_DEFAULT }; state.gFromExcel = false;
+  // 자사몰은 쿠폰·카드할인이 없으므로 빈 값은 0 (G마켓 기본값을 쓰면 안 됨)
+  state.g = state.market === 'g' ? { ...G_DEFAULT } : Object.fromEntries(Object.keys(G_DEFAULT).map((k) => [k, 0]));
+  state.gFromExcel = false;
   let gCol = -1, found = 0;
   for (let r = 0; r < limit; r++) {
     const row = aoa[r] || [];
-    if (gCol < 0) { gCol = row.findIndex((v) => /^G마켓/.test(squash(v))); if (gCol >= 0) continue; }
+    if (gCol < 0) { gCol = row.findIndex((v) => mkt().col.test(squash(v))); if (gCol >= 0) continue; }
     const key = G_LABELS[squash(row[0])];
     if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { state.g[key] = Number(row[gCol]); found++; }
   }
@@ -768,6 +790,14 @@ drop.addEventListener('drop', (ev) => { const f = ev.dataTransfer.files[0]; if (
 $('#cat-filter').addEventListener('change', renderCompare);
 $('#export').addEventListener('click', exportXlsx);
 $('#only-expensive').addEventListener('change', renderCompare);
+$('#market').value = state.market;
+$('#market').addEventListener('change', (e) => {
+  state.market = e.target.value;
+  try { localStorage.setItem('market', state.market); } catch { /* 무시 */ }
+  $('#settle-head').textContent = `(${mkt().label} · 마진)`;
+  loadRows();
+});
+$('#settle-head').textContent = `(${mkt().label} · 마진)`;
 $('#open-only').checked = state.openOnly;
 $('#open-only').addEventListener('change', (e) => {
   state.openOnly = e.target.checked;
