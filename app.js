@@ -23,9 +23,10 @@ try { state.openOnly = localStorage.getItem('openOnly') !== 'N'; } catch { /* �
 // 기준 마켓: 정산가세팅의 'G마켓 기준' 표 + 마켓 조건 G마켓·옥션 열, 또는 '자사몰 기준' 표 + 자사몰 열
 const MARKETS = { g: { label: 'G마켓', table: /G마켓기준/, col: /^G마켓/ }, own: { label: '자사몰', table: /자사몰기준/, col: /^자사몰/ },
   himart: { label: '하이마트', table: /하이마트기준/, col: /^하이마트/ } };
-state.market = 'g';
-try { if (MARKETS[localStorage.getItem('market')]) state.market = localStorage.getItem('market'); } catch { /* 기본값 */ }
-const mkt = () => MARKETS[state.market];
+state.market = 'mark';                     // 'mark' = 제품마다 노란색으로 칠한 표
+try { const m = localStorage.getItem('market'); if (m === 'mark' || MARKETS[m]) state.market = m; } catch { /* 기본값 */ }
+state.rowMk = {};                           // 사이트에서 직접 바꾼 제품별 기준 (모델명 → 마켓)
+const mkt = () => MARKETS[state.market] || { label: '제품별' };
 const $ = (s) => document.querySelector(s);
 const won = (n) => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('ko-KR'));
 const signed = (n) => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(Math.round(n)).toLocaleString('ko-KR');
@@ -285,9 +286,11 @@ async function loadAll() {
 function readExcel(file) {
   const fs = $('#file-status');
   const reader = new FileReader();
-  reader.onload = (ev) => {
+  reader.onload = async (ev) => {
     try {
-      state.wb = XLSX.read(ev.target.result, { type: 'array' }); state.fileName = file.name;
+      const buf = ev.target.result;
+      state.wb = XLSX.read(buf, { type: 'array' }); state.fileName = file.name; state.rowMk = {};
+      state.yellow = await yellowRows(buf);
       loadRows();
     } catch (e) {
       fs.innerHTML = `<span class="err">엑셀을 읽지 못했습니다: ${esc(e.message)}</span>`;
@@ -295,66 +298,117 @@ function readExcel(file) {
   };
   reader.readAsArrayBuffer(file);
 }
-// 올린 엑셀에서 기준 마켓의 표를 읽는다 (기준 마켓을 바꾸면 다시 읽음)
-function loadRows() {
+// 노란색(FFFF00)으로 칠한 셀이 있는 행 → Set('시트!행번호'). 제품별 기준 표를 고르는 데 씀
+async function yellowRows(buf) {
+  const out = new Set();
+  if (!window.ExcelJS) return out;
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    wb.eachSheet((ws) => ws.eachRow((row, r) => row.eachCell((cell) => {
+      const f = cell.fill, rgb = f && f.type === 'pattern' && f.fgColor && f.fgColor.argb;
+      if (rgb && /FFFF00$/i.test(rgb)) out.add(`${ws.name}!${r}`);
+    })));
+  } catch { /* 색을 못 읽으면 표시 없음으로 */ }
+  return out;
+}
+
+const squash = (v) => String(v ?? '').replace(/\s+/g, '');
+const ZERO_G = () => Object.fromEntries(Object.keys(G_DEFAULT).map((k) => [k, 0]));
+// 정산가세팅에서 표들(G마켓·자사몰·하이마트 기준)과 마켓 조건을 읽는다
+function readTables(wb) {
+  const order = [...wb.SheetNames].sort((a, b) => (b === '정산가세팅') - (a === '정산가세팅'));
+  for (const name of order) {
+    const ws = wb.Sheets[name];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: true });
+    const top = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).s.r : 0;     // aoa 0번 = 엑셀 (top+1)행
+    const tables = [];
+    for (let h = 0; h < Math.min(aoa.length, 200); h++) {
+      const head = aoa[h].map(squash);
+      const iModel = head.indexOf('모델명');
+      const iPrice = head.findIndex((v) => /^노출가\(2차/.test(v));
+      if (iModel < 0 || iPrice < 0) continue;
+      const above = (aoa[h - 1] || []).concat(aoa[h - 2] || []).map(squash);
+      const mk = Object.keys(MARKETS).find((k) => above.some((v) => MARKETS[k].table.test(v))) || null;
+      const col = (t) => head.indexOf(t);
+      const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가'), iMax = col('최대혜택가');
+      const rows = [];
+      for (let r = h + 1; r < aoa.length; r++) {
+        const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
+        if (!model) break; // 표 하나는 빈 모델 행에서 끝
+        const num = (i) => (i >= 0 ? Number(aoa[r][i]) || null : null);
+        // 노출가가 비어 있으면 신규 상품: 경쟁 최저가로 노출가를 제안만 한다
+        rows.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
+          price: price > 0 ? price : null, cost: num(iCost), settle: num(iSettle), maxb: num(iMax),
+          marked: state.yellow ? state.yellow.has(`${name}!${top + r + 1}`) : false });
+      }
+      if (rows.length) { tables.push({ mk, rows }); h += rows.length; }
+    }
+    if (tables.length) {
+      const limit = aoa.findIndex((r) => r.map(squash).includes('모델명'));
+      const conds = {};
+      for (const k of Object.keys(MARKETS)) conds[k] = readConditions(aoa, limit, k);
+      return { tables, conds };
+    }
+  }
+  return { tables: [], conds: {} };
+}
+// '마켓 조건' 표에서 마켓 열(G마켓·옥션 / 자사몰 / 하이마트) 값을 읽는다
+function readConditions(aoa, limit, k) {
+  // G마켓 외에는 빈 조건을 0으로 (자사몰에 G마켓 쿠폰 기본값이 들어가면 안 됨)
+  const g = k === 'g' ? { ...G_DEFAULT } : ZERO_G();
+  let gCol = -1, found = 0;
+  for (let r = 0; r < limit; r++) {
+    const row = aoa[r] || [];
+    if (gCol < 0) { gCol = row.findIndex((v) => MARKETS[k].col.test(squash(v))); if (gCol >= 0) continue; }
+    const key = G_LABELS[squash(row[0])];
+    if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { g[key] = Number(row[gCol]); found++; }
+  }
+  return { g, ok: found >= 8 };
+}
+// 기준 마켓 표의 행 + 그 마켓 조건. 하이마트는 카드할인을 받은 최대혜택가로 다나와와 비교
+const withMarket = (row, mk, conds) => ({ ...row, mk, g: (conds[mk] || { g: state.g }).g, cmpMax: mk === 'himart' });
+
+// 올린 엑셀에서 기준(제품별 노란색 표시 / 한 마켓) 표를 읽는다 (기준을 바꾸면 다시 읽음)
+function loadRows(keepState = false) {
   const fs = $('#file-status');
   if (!state.wb) return;
   try {
-    const rows = extractRows(state.wb);
-    if (!rows.length) throw new Error(`'모델명'과 '노출가 (2차혜택가)' 열이 있는 ${mkt().label} 기준 표를 찾지 못했습니다`);
-    state.rows = rows; state.keep.clear(); state.openRow = null;
-    const L = mkt().label;
-    fs.innerHTML = `<b>${esc(state.fileName)}</b> · <b>${L} 기준</b> ${rows.length}개 모델 읽음${state.gFromExcel ? ` · ${L} 조건 반영` : ` · <span class="err">${L} 조건을 못 찾아 기본값 사용</span>`} <span class="muted">(브라우저 메모리에만 있음)</span>`;
+    const { tables, conds } = readTables(state.wb);
+    if (!tables.length) throw new Error("'모델명'과 '노출가 (2차혜택가)' 열이 있는 표를 찾지 못했습니다");
+    const titled = tables.filter((t) => t.mk);
+    let rows, note;
+    if (state.market === 'mark') {
+      // 제품마다 노란색으로 칠한 표가 기준. 표들은 같은 순서(같은 행 = 같은 제품)
+      const base = (titled.length ? titled : tables)[0].rows;
+      const avail = titled.length ? titled : [{ mk: 'g', rows: base }];
+      const fallback = avail.find((t) => t.mk === 'own') || avail[0];
+      const count = {};
+      rows = base.map((r0, i) => {
+        const cands = avail.filter((t) => t.rows[i] && t.rows[i].model === r0.model);
+        const pick = cands.find((t) => t.mk === state.rowMk[r0.model]) || cands.find((t) => t.rows[i].marked);
+        const t = pick || fallback;
+        const row = withMarket(t.rows[i], t.mk, conds);
+        row.unmarked = !pick; row.choices = cands.map((c) => c.mk);
+        count[row.unmarked ? '미표시' : MARKETS[t.mk].label] = (count[row.unmarked ? '미표시' : MARKETS[t.mk].label] || 0) + 1;
+        return row;
+      });
+      note = `<b>제품별 기준</b> (노란색 표시) ${Object.entries(count).map(([k, n]) => k === '미표시' ? `<span class="err">미표시 ${n} → ${MARKETS[fallback.mk].label}</span>` : `${k} ${n}`).join(' · ')}`;
+    } else {
+      const t = titled.length ? titled.find((x) => x.mk === state.market) : tables[0];
+      if (!t) throw new Error(`'${mkt().label} 기준' 표를 찾지 못했습니다`);
+      rows = t.rows.map((r) => withMarket(r, state.market, conds));
+      note = `<b>${mkt().label} 기준</b>${conds[state.market] && conds[state.market].ok ? '' : ` · <span class="err">${mkt().label} 조건을 못 찾아 기본값 사용</span>`}`;
+    }
+    state.g = (conds[state.market] || conds.g || { g: state.g }).g;
+    state.rows = rows;
+    if (!keepState) { state.keep.clear(); state.openRow = null; }
+    fs.innerHTML = `<b>${esc(state.fileName)}</b> · ${rows.length}개 모델 · ${note} <span class="muted">(브라우저 메모리에만 있음)</span>`;
     renderCompare();
   } catch (e) {
     state.rows = []; state.results = []; $('#compare').hidden = true;
     fs.innerHTML = `<span class="err">엑셀을 읽지 못했습니다: ${esc(e.message)}</span>`;
   }
-}
-
-const squash = (v) => String(v ?? '').replace(/\s+/g, '');
-function extractRows(wb) {
-  const order = [...wb.SheetNames].sort((a, b) => (b === '정산가세팅') - (a === '정산가세팅'));
-  for (const name of order) {
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '', blankrows: true });
-    // 표 제목('G마켓 기준'·'자사몰 기준')이 있는 시트면 기준 마켓의 표만, 없으면 첫 표
-    const titled = aoa.slice(0, 120).some((r) => r.some((v) => /^(G마켓|자사몰|하이마트)기준$/.test(squash(v))));
-    for (let h = 0; h < Math.min(aoa.length, 120); h++) {
-      const head = aoa[h].map(squash);
-      if (titled && !((aoa[h - 1] || []).concat(aoa[h - 2] || [])).some((v) => mkt().table.test(squash(v)))) continue;
-      const iModel = head.indexOf('모델명');
-      const iPrice = head.findIndex((v) => /^노출가\(2차/.test(v));
-      if (iModel < 0 || iPrice < 0) continue;
-      const col = (t) => head.indexOf(t);
-      const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가'), iMax = col('최대혜택가');
-      const out = [];
-      for (let r = h + 1; r < aoa.length; r++) {
-        const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
-        if (!model) break; // 표 하나만 읽는다 (빈 모델 행에서 멈춤)
-        const num = (i) => (i >= 0 ? Number(aoa[r][i]) || null : null);
-        // 노출가가 비어 있으면 신규 상품: 경쟁 최저가로 노출가를 제안만 한다
-        out.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
-          price: price > 0 ? price : null,
-          cost: num(iCost), settle: num(iSettle), maxb: num(iMax) });
-      }
-      if (out.length) { readGConditions(aoa, h); return out; }
-    }
-  }
-  return [];
-}
-// '마켓 조건' 표에서 기준 마켓 열(G마켓·옥션 / 자사몰) 값을 읽는다
-function readGConditions(aoa, limit) {
-  // 자사몰은 쿠폰·카드할인이 없으므로 빈 값은 0 (G마켓 기본값을 쓰면 안 됨)
-  state.g = state.market === 'g' ? { ...G_DEFAULT } : Object.fromEntries(Object.keys(G_DEFAULT).map((k) => [k, 0]));
-  state.gFromExcel = false;
-  let gCol = -1, found = 0;
-  for (let r = 0; r < limit; r++) {
-    const row = aoa[r] || [];
-    if (gCol < 0) { gCol = row.findIndex((v) => mkt().col.test(squash(v))); if (gCol >= 0) continue; }
-    const key = G_LABELS[squash(row[0])];
-    if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { state.g[key] = Number(row[gCol]); found++; }
-  }
-  state.gFromExcel = found >= 8;
 }
 
 // ---------- G마켓 계산 (엑셀 정산가세팅과 같은 식) ----------
@@ -370,6 +424,12 @@ function gListFrom2nd(O, g) {
   return L1 - 10;
 }
 const settleAt2nd = (O, g) => gSettle(gListFrom2nd(O, g), g);
+// 최대혜택가가 M 이상이 되는 가장 낮은 노출가(2차혜택가) — 하이마트처럼 혜택가로 맞출 때
+function secondForMax(M, g) {
+  let lo = M, hi = Math.ceil(M * 1.5 / 10) * 10 + 10;
+  while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gMaxBenefit(mid, g) >= M) hi = mid; else lo = mid; }
+  return gMaxBenefit(lo, g) >= M ? lo : hi;
+}
 const gMaxBenefit = (O, g) => O - Math.min(fl10(O * g.card), O >= g.hi ? g.capH : g.capL); // 2차혜택가 → 최대혜택가
 function breakeven2nd(cost, g) { // 정산가 ≥ 원가가 되는 최소 2차혜택가
   let lo = 0, hi = Math.ceil(cost * 3 / 10) * 10;
@@ -432,7 +492,10 @@ function matchRow(row) {
 }
 
 function analyze({ row, cat, nameA, listing }, ownCodes) {
-  const d = state.db[cat], g = state.g;
+  const d = state.db[cat], g = row.g || state.g;
+  // 비교 가격: 보통은 노출가(2차혜택가), 하이마트는 카드할인을 받은 최대혜택가
+  const toCmp = (x) => (x == null ? null : row.cmpMax ? gMaxBenefit(x, g) : x);
+  const fromCmp = (y) => (row.cmpMax ? secondForMax(y, g) : y);
   // 속성: 다나와 상품이 있으면 그 스펙, 없으면 모델명. 이름의 RGB/팬 정보는 항상 반영
   const a = listing ? { ...listing.a } : nameA;
   if (cat === 'gpu') { a.led = a.led || nameA.led; a.fans = a.fans || nameA.fans; a.oc = a.oc || nameA.oc; a.mem = a.mem || nameA.mem; }
@@ -447,22 +510,23 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
     : group.filter((it) => !it.own && rule.test(it.a) && !ownCodes.has(it.code));
   const low = others[0] || null;
   const fresh = row.price == null;                      // 노출가 없는 신규 상품
-  const diff = low && !fresh ? row.price - low.price : null;
-  const cheaper = others.filter((it) => it.price < row.price).length;
+  const cmp = fresh ? null : row.cmpMax && row.maxb ? row.maxb : toCmp(row.price);
+  const diff = low && !fresh ? cmp - low.price : null;
+  const cheaper = others.filter((it) => it.price < cmp).length;
 
   // 제안 노출가
   let sug = row.price, verdict = '비교 불가', vcls = 'muted', be = null;
   if (fresh) {
     sug = null; verdict = '비교 불가';
     if (low) {
-      sug = fl10(low.price * TARGET); verdict = '신규'; vcls = 'ok';
+      sug = fromCmp(fl10(low.price * TARGET)); verdict = '신규'; vcls = 'ok';
       if (row.cost) { be = breakeven2nd(row.cost, g); if (settleAt2nd(sug, g) < row.cost) { sug = be; verdict = '손실·보류'; vcls = 'warn'; } }
     }
   } else if (low) {
-    const ratio = row.price / low.price;
+    const ratio = cmp / low.price;
     if (ratio >= TARGET && ratio <= KEEP_HI) { verdict = '유지'; vcls = 'ok'; }
     else {
-      sug = fl10(low.price * TARGET);
+      sug = fromCmp(fl10(low.price * TARGET));
       if (sug === row.price) { verdict = '유지'; vcls = 'ok'; }
       else { verdict = sug < row.price ? '인하' : '인상'; vcls = sug < row.price ? 'up' : 'down'; } // 색은 차이 칸과 같게 (인하=우리가 비쌈)
     }
@@ -475,7 +539,8 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
   const curSettle = fresh ? null : row.settle || settleAt2nd(row.price, g);
   const filterUrl = danawaFilterUrl(cat, a, sameOther ? listing : null);
   return { ...row, catKey: cat, a, rule, listing, group, others, low, diff, pct: low ? diff / low.price : null,
-    rank: low && !fresh ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: fresh ? 0 : sug - row.price, verdict, vcls, be, fresh,
+    rank: low && !fresh ? cheaper + 1 : null, total: others.length + 1, sug, sugDiff: fresh ? 0 : toCmp(sug) - cmp, verdict, vcls, be, fresh,
+    cmp, sugCmp: toCmp(sug), beCmp: toCmp(be),
     sugSettle, sugMargin: row.cost && sugSettle != null ? (sugSettle - row.cost) / row.cost : null, sameOther, filterUrl,
     curMax: fresh ? null : row.maxb || gMaxBenefit(row.price, g), curSettle, sugMax: sug == null ? null : gMaxBenefit(sug, g) };
 }
@@ -485,8 +550,8 @@ function analyze({ row, cat, nameA, listing }, ownCodes) {
 state.keep = new Set();
 function applyKeep(a) {
   if (!state.keep.has(a.model) || (a.verdict !== '인하' && a.verdict !== '인상')) return a;
-  const g = state.g, sugSettle = settleAt2nd(a.price, g);
-  return { ...a, verdict: '유지', vcls: 'ok', manual: true, autoVerdict: a.verdict, autoSug: a.sug, sug: a.price, sugDiff: 0,
+  const g = a.g || state.g, sugSettle = settleAt2nd(a.price, g);
+  return { ...a, verdict: '유지', vcls: 'ok', manual: true, autoVerdict: a.verdict, autoSug: a.sugCmp, sug: a.price, sugCmp: a.cmp, sugDiff: 0,
     sugSettle, sugMax: gMaxBenefit(a.price, g), sugMargin: a.cost ? (sugSettle - a.cost) / a.cost : null };
 }
 
@@ -508,24 +573,27 @@ function renderCompare() {
   tb.innerHTML = list.map((a, i) => {
     const cls = a.diff > 0 ? 'up' : a.diff < 0 ? 'down' : '';
     const model = a.listing ? link(a.catKey, a.listing, a.model) : esc(a.model);
+    // 제품별 기준 표시 — 누르면 다음 표로 (G마켓 → 자사몰 → 하이마트)
+    const mkTag = state.market !== 'mark' ? '' : `<button type="button" class="mkbtn${a.unmarked ? ' unmarked' : ''}" data-mk="${i}" title="${a.unmarked ? '노란색 표시가 없어 기본 기준으로 계산 · ' : ''}누르면 기준 표를 바꿉니다">${MARKETS[a.mk].label}${a.unmarked ? '?' : ''}</button>`;
     const shared = a.sameOther;
     const dnw = a.listing ? `${link(a.catKey, a.listing, won(a.listing.price))}${shared ? '<div class="spec">공용 상품페이지</div>' : ''}` : '<span class="muted">다나와 미등록</span>';
     const low = a.low ? `<b>${won(a.low.price)}</b><div class="spec">${link(a.catKey, a.low)}${shared ? ' <span class="tag">동일모델</span>' : ''}</div>${a.low.mall ? `<div class="spec">${esc(mallTxt(a.low))}</div>` : ''}` : '<span class="muted">동일스펙 없음</span>';
     const rule = (a.rule ? esc(a.rule.label) : '<span class="err">스펙 판별 불가</span>')
       + ` <a class="flink" href="${esc(a.filterUrl)}" target="_blank" rel="noopener" title="우리 제품 기준 스펙으로 다나와 목록 필터">다나와 필터 ↗</a>`;
-    const sugNote = a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.be)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '';
+    const sugNote = (a.verdict === '손실·보류' ? ` <span class="spec">손익분기 ${won(a.beCmp)}</span>` : a.sugDiff ? ` <span class="spec">${signed(a.sugDiff)}</span>` : '')
+      + (a.cmpMax && a.sug != null ? `<div class="spec">노출가 ${won(a.sug)}</div>` : '');
     const canKeep = a.manual || a.verdict === '인하' || a.verdict === '인상';
     const badge = !canKeep ? `<span class="badge ${a.vcls}">${a.verdict}</span>`
       : a.manual ? `<button type="button" class="badge vbtn manual ${a.vcls}" data-keep="${i}" title="직접 유지로 바꿈 · 다시 누르면 원래 판정(${a.autoVerdict} ${won(a.autoSug)})">유지</button>`
       : `<button type="button" class="badge vbtn ${a.vcls}" data-keep="${i}" title="누르면 유지 (현재 노출가 그대로)">${a.verdict}</button>`;
     const open = a.group.length ? `<button type="button" class="ghost open" data-open="${i}">${state.openRow === a.model ? '접기' : '보기'}</button>` : '';
     return `<tr data-r="${i}">
-      ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span><span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
-      ${td(1, a.price ?? '', a.fresh ? '<span class="muted">미입력</span>' : `<b>${won(a.price)}</b>`)}
+      ${td(0, a.model, `<div class="mtop"><span class="cat">${esc(CATS[a.catKey].label)}</span>${mkTag}<span>${model}</span>${open}</div><div class="rule">${rule}</div>`, 'left')}
+      ${td(1, a.cmp ?? '', a.fresh ? '<span class="muted">미입력</span>' : `<b>${won(a.cmp)}</b>${a.cmpMax ? `<div class="spec">최대혜택가 · 노출가 ${won(a.price)}</div>` : ''}`)}
       ${td(2, a.listing ? a.listing.price : '', dnw)}
       ${td(3, a.low ? a.low.price : '', low)}
       ${td(4, a.diff ?? '', `<span class="${cls}">${a.diff == null ? '-' : signed(a.diff)}</span><div class="spec">${pctTxt(a.pct)}${a.rank ? ` · ${a.rank}/${a.total}위` : ''}</div>`)}
-      ${td(5, a.sug ?? '', `<b>${won(a.sug)}</b>${sugNote}<div>${badge}</div>`, 'sugc')}
+      ${td(5, a.sugCmp ?? '', `<b>${won(a.sugCmp)}</b>${sugNote}<div>${badge}</div>`, 'sugc')}
       ${td(6, a.sugSettle == null ? '' : Math.round(a.sugSettle), `${won(a.sugSettle)}<div class="spec">${a.sugMargin == null ? '' : '마진 ' + pctTxt(a.sugMargin)}</div>`)}
     </tr>${state.openRow === a.model ? detailRow(a) : ''}`;
   }).join('') || '<tr><td colspan="7" class="center muted">표시할 모델이 없습니다</td></tr>';
@@ -533,6 +601,11 @@ function renderCompare() {
     const m = list[+b.dataset.keep].model;
     if (state.keep.has(m)) state.keep.delete(m); else state.keep.add(m);
     renderCompare();
+  }));
+  tb.querySelectorAll('[data-mk]').forEach((b) => b.addEventListener('click', () => {
+    const a = list[+b.dataset.mk], ch = a.choices || [];
+    state.rowMk[a.model] = ch[(ch.indexOf(a.mk) + 1) % ch.length];
+    loadRows(true);
   }));
   tb.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
     const a = list[+b.dataset.open]; state.openRow = state.openRow === a.model ? null : a.model; renderCompare();
@@ -554,7 +627,7 @@ function detailRow(a) {
     const same = a.sameOther && it.code === a.listing.code;
     const mine = it.own || (state.ownCodes.has(it.code) && !same);
     const ok = !mine && a.rule.test(it.a);
-    const d = a.fresh ? null : a.price - it.price;
+    const d = a.fresh ? null : a.cmp - it.price;
     return `<tr class="${mine ? 'own' : ok ? '' : 'dim'}"><td class="center">${i + 1}</td>
       <td class="name">${link(a.catKey, it)}${mine ? '<span class="tag own">자사</span>' : ok ? '' : '<span class="tag">조건 밖</span>'}</td>
       <td class="left spec">${esc(specSummary(a.catKey, it.a))}</td>
@@ -642,7 +715,7 @@ function buildExportWorkbook() {
       a.price ?? '', num(a.curMax), cost ?? '', curM == null ? '' : R(curM), curM == null ? '' : curM / cost,
       a.sug ?? '', num(a.sugMax), cost ?? '', sugM == null ? '' : R(sugM), sugM == null ? '' : sugM / cost,
       low ? low.code : '', low ? low.name : '', low ? low.base ?? low.price : '', low ? low.mall || '' : '', low && low.ship != null ? low.ship : '',
-      low ? (a.fresh ? '' : a.price - low.price) : '', lowUrl, a.filterUrl,
+      low ? (a.fresh ? '' : a.cmp - low.price) : '', lowUrl, a.filterUrl,
       a.verdict,
     ];
     const urls = { 1: a.listing ? danawaUrl(a.catKey, a.listing.code) : '', 13: lowUrl, 19: lowUrl, 20: a.filterUrl };
@@ -659,7 +732,8 @@ function buildExportWorkbook() {
       if (c === 18 && low) {
         // 가격차이 = 노출가 − (최저가 + 배송비) (수식). 색은 서식으로: 우리가 비싸면 빨강, 싸면 파랑 — 노출가를 고쳐도 맞게 바뀜
         // 신규(노출가 미입력)도 수식을 넣어 두면 노출가를 적는 순간 계산된다
-        cell.value = { formula: `IF(OR(C${r}="",O${r}=""),"",C${r}-(O${r}+N(Q${r})))`, result: v };
+        const P = a.cmpMax ? 'D' : 'C';                    // 하이마트는 최대혜택가로 비교
+        cell.value = { formula: `IF(OR(${P}${r}="",O${r}=""),"",${P}${r}-(O${r}+N(Q${r})))`, result: v };
         cell.numFmt = '[Red]+#,##0;[Blue]-#,##0;0';
         cell.font = { ...font, bold: true };
       }
@@ -668,7 +742,7 @@ function buildExportWorkbook() {
     ws.getCell(r, 8).font = { ...ws.getCell(r, 8).font, bold: true };
     // 제안세팅 I~L 은 수식 (result 는 열자마자 보이도록 미리 계산한 값)
     if (a.sug == null) return;
-    const f = gFormulas(`H${r}`, `J${r}`, state.g);
+    const f = gFormulas(`H${r}`, `J${r}`, a.g || state.g);
     ws.getCell(r, 9).value = { formula: f.max, result: R(a.sugMax) };
     ws.getCell(r, 10).value = { formula: `IF(E${r}="","",E${r})`, result: cost ?? '' };
     ws.getCell(r, 11).value = { formula: f.margin, result: sugM == null ? '' : sugM };
@@ -795,10 +869,10 @@ $('#market').value = state.market;
 $('#market').addEventListener('change', (e) => {
   state.market = e.target.value;
   try { localStorage.setItem('market', state.market); } catch { /* 무시 */ }
-  $('#settle-head').textContent = `(${mkt().label} · 마진)`;
+  $('#settle-head').textContent = `(${state.market === 'mark' ? '기준 마켓' : mkt().label} · 마진)`;
   loadRows();
 });
-$('#settle-head').textContent = `(${mkt().label} · 마진)`;
+$('#settle-head').textContent = `(${state.market === 'mark' ? '기준 마켓' : mkt().label} · 마진)`;
 $('#open-only').checked = state.openOnly;
 $('#open-only').addEventListener('change', (e) => {
   state.openOnly = e.target.checked;

@@ -126,3 +126,7 @@ button.vbtn { white-space: nowrap; cursor: pointer; background: #fff; padding: 2
 button.vbtn:hover { background: var(--panel2); box-shadow: 0 2px 6px rgba(25, 27, 22, .1); }
 button.vbtn:active { transform: translateY(1px); }
 button.vbtn.manual { border-style: dashed; }
+
+/* 제품별 기준 마켓 (노란색 표시) — 누르면 다음 표로 */
+button.mkbtn { padding: 0 7px; font-size: 10.5px; font-weight: 700; border-radius: 99px; background: #fff7c2; border: 1px solid #e6d36a; color: #6b5a00; white-space: nowrap; flex: none; }
+button.mkbtn.unmarked { background: #fff; border-style: dashed; border-color: var(--up); color: var(--up); }
