@@ -366,6 +366,8 @@ function readConditions(aoa, limit, k) {
     const key = row.slice(0, 4).map((v) => G_LABELS[squash(v)]).find(Boolean);   // 항목 이름 (앞에 열이 끼워져 있어도)
     if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { g[key] = Number(row[gCol]); found++; }
   }
+  // 하이마트는 카드할인을 MD쿠폰 적용가에 건다 (하이마트 페이지·대금지급내역과 같음). G마켓 MD쿠폰은 최대혜택가에 안 들어감
+  if (k === 'himart') g.mdMax = true;
   return { g, ok: found >= 8 };
 }
 // 기준 마켓 표의 행 + 그 마켓 조건. 다나와와는 모든 마켓을 노출가(카드할인 전)로 비교한다
@@ -438,7 +440,10 @@ function secondForMax(M, g) {
   while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gMaxBenefit(mid, g) >= M) hi = mid; else lo = mid; }
   return gMaxBenefit(lo, g) >= M ? lo : hi;
 }
-const gMaxBenefit = (O, g) => O - Math.min(fl10(O * g.card), O >= g.hi ? g.capH : g.capL); // 2차혜택가 → 최대혜택가
+const gMaxBenefit = (O, g) => { // 2차혜택가 → 최대혜택가
+  const b = g.mdMax ? O - fl10(O * g.md) : O;
+  return b - Math.min(fl10(b * g.card), b >= g.hi ? g.capH : g.capL);
+};
 function breakeven2nd(cost, g) { // 정산가 ≥ 원가가 되는 최소 2차혜택가
   let lo = 0, hi = Math.ceil(cost * 3 / 10) * 10;
   while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gSettle(mid, g) >= cost) hi = mid; else lo = mid; }
@@ -680,7 +685,7 @@ function gFormulas(o, cost, g) {
   const card = `MIN(ROUNDDOWN(${sec(L)}*${g.card},-1),IF(${sec(L)}>=${g.hi},${g.capH},${g.capL}))*${g.cardS}`;
   const settle = `${L}-${L}*${g.fee}-${L}*${g.pro}${selPart}-${rd(L, g.dup)}-${card}`;
   return {
-    max: `${o}-MIN(ROUNDDOWN(${o}*${g.card},-1),IF(${o}>=${g.hi},${g.capH},${g.capL}))`,
+    max: ((b) => `${b}-MIN(ROUNDDOWN(${b}*${g.card},-1),IF(${b}>=${g.hi},${g.capH},${g.capL}))`)(g.mdMax ? `(${o}-ROUNDDOWN(${o}*${g.md},-1))` : o),
     margin: `IF(${cost}="","",${settle}-${cost})`,
     rate: `IF(OR(${cost}="",${cost}=0),"",K{r}/${cost})`,
   };
