@@ -333,6 +333,7 @@ function readTables(wb) {
       const col = (t) => head.indexOf(t);
       const iCat = col('카테고리'), iBrand = col('브랜드'), iCost = col('원가'), iSettle = col('정산가'), iMax = col('최대혜택가');
       const iState = col('상태');                       // 세팅 / 단종 / 보류 (드롭다운)
+      const iMd = head.findIndex((v) => /^MD쿠폰/.test(v)); // 하이마트 상품별 MD쿠폰율 (비우면 마켓 조건 값)
       const rows = [];
       for (let r = h + 1; r < aoa.length; r++) {
         const model = String(aoa[r][iModel] || '').trim(), price = Number(aoa[r][iPrice]);
@@ -342,6 +343,7 @@ function readTables(wb) {
         rows.push({ cat: String(aoa[r][iCat] || '').trim().toUpperCase(), brand: String(aoa[r][iBrand] || '').trim(), model,
           price: price > 0 ? price : null, cost: num(iCost), settle: num(iSettle), maxb: num(iMax),
           status: iState >= 0 ? squash(aoa[r][iState]) : '',
+          md: iMd >= 0 && aoa[r][iMd] !== '' && !isNaN(Number(aoa[r][iMd])) ? Number(aoa[r][iMd]) : null,
           marked: (iState >= 0 && squash(aoa[r][iState]) === '세팅') || (state.yellow ? state.yellow.has(`${name}!${top + r + 1}`) : false) });
       }
       if (rows.length) { tables.push({ mk, rows }); h += rows.length; }
@@ -366,14 +368,18 @@ function readConditions(aoa, limit, k) {
     const key = row.slice(0, 4).map((v) => G_LABELS[squash(v)]).find(Boolean);   // 항목 이름 (앞에 열이 끼워져 있어도)
     if (key && gCol >= 0 && row[gCol] !== '' && !isNaN(Number(row[gCol]))) { g[key] = Number(row[gCol]); found++; }
   }
-  // 하이마트는 카드할인을 MD쿠폰 적용가에 건다 (하이마트 페이지·대금지급내역과 같음). G마켓 MD쿠폰은 최대혜택가에 안 들어감
-  if (k === 'himart') g.mdMax = true;
+  // 하이마트 '노출가' = MD쿠폰 적용가(하이마트 페이지 가격). 등재가 = 노출가 ÷ (1 − MD), 카드할인은 노출가에 건다
+  // (가격세팅 하이마트 기준 표와 같음). G마켓 MD쿠폰은 노출가·최대혜택가에 안 들어감
+  if (k === 'himart') g.mdShown = true;
   return { g, ok: found >= 8 };
 }
 // 기준 마켓 표의 행 + 그 마켓 조건. 다나와와는 모든 마켓을 노출가(카드할인 전)로 비교한다
 // — 다나와 목록 가격도 카드할인 전이라서. 최대혜택가로 비교하려면 CMP_MAX 에 마켓을 넣는다.
 const CMP_MAX = new Set();
-const withMarket = (row, mk, conds) => ({ ...row, mk, g: (conds[mk] || { g: state.g }).g, cmpMax: CMP_MAX.has(mk) });
+const withMarket = (row, mk, conds) => {
+  const g0 = (conds[mk] || { g: state.g }).g;
+  return { ...row, mk, g: row.md != null && g0.mdShown ? { ...g0, md: row.md } : g0, cmpMax: CMP_MAX.has(mk) };
+};
 
 // 올린 엑셀에서 기준(제품별 노란색 표시 / 한 마켓) 표를 읽는다 (기준을 바꾸면 다시 읽음)
 function loadRows(keepState = false) {
@@ -429,8 +435,9 @@ function gSettle(L, g) {
   return L - L * g.fee - L * g.pro - (g.sel ? (sa / g.sel) * g.selS : 0) - da - card * g.cardS;
 }
 function gListFrom2nd(O, g) {
-  const L1 = fl10(O / (1 - g.sel - g.dup));
-  for (const L of [L1 + 10, L1, L1 - 10]) if (gSecond(L, g) <= O) return L;
+  const T = g.mdShown ? O / (1 - g.md) : O;              // 하이마트: MD쿠폰 전 가격으로
+  const L1 = fl10(T / (1 - g.sel - g.dup));
+  for (const L of [L1 + 10, L1, L1 - 10]) if (gSecond(L, g) <= T) return L;
   return L1 - 10;
 }
 const settleAt2nd = (O, g) => gSettle(gListFrom2nd(O, g), g);
@@ -440,14 +447,11 @@ function secondForMax(M, g) {
   while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gMaxBenefit(mid, g) >= M) hi = mid; else lo = mid; }
   return gMaxBenefit(lo, g) >= M ? lo : hi;
 }
-const gMaxBenefit = (O, g) => { // 2차혜택가 → 최대혜택가
-  const b = g.mdMax ? O - fl10(O * g.md) : O;
-  return b - Math.min(fl10(b * g.card), b >= g.hi ? g.capH : g.capL);
-};
+const gMaxBenefit = (O, g) => O - Math.min(fl10(O * g.card), O >= g.hi ? g.capH : g.capL); // 노출가 → 최대혜택가
 function breakeven2nd(cost, g) { // 정산가 ≥ 원가가 되는 최소 2차혜택가
   let lo = 0, hi = Math.ceil(cost * 3 / 10) * 10;
   while (hi - lo > 10) { const mid = fl10((lo + hi) / 2); if (gSettle(mid, g) >= cost) hi = mid; else lo = mid; }
-  return gSecond(hi, g);
+  return g.mdShown ? hi - fl10(hi * g.md) : gSecond(hi, g);
 }
 
 // ---------- 자사 모델 ↔ 다나와 상품 매칭 ----------
@@ -679,13 +683,14 @@ const thin = (rgb) => { const s = { style: 'thin', color: { argb: 'FF' + rgb } }
 function gFormulas(o, cost, g) {
   const rd = (x, m) => `ROUNDDOWN(${x}*${m},-1)`;
   const sec = (x) => `(${x}-${rd(x, g.sel)}-${rd(x, g.dup)})`;              // 등재가 → 2차혜택가
-  const a = `ROUNDDOWN(${o}/(1-${g.sel}-${g.dup}),-1)`;                       // 2차혜택가 → 등재가 (정산가세팅 L열과 같은 방식)
-  const L = `(IF(${sec(`(${a}+10)`)}<=${o},${a}+10,IF(${sec(a)}<=${o},${a},${a}-10)))`;
+  const t = g.mdShown ? `(${o}/(1-${g.md}))` : o;                             // 하이마트: 노출가(MD 적용) → MD 전 가격
+  const a = `ROUNDDOWN(${t}/(1-${g.sel}-${g.dup}),-1)`;                       // 2차혜택가 → 등재가 (정산가세팅 L열과 같은 방식)
+  const L = `(IF(${sec(`(${a}+10)`)}<=${t},${a}+10,IF(${sec(a)}<=${t},${a},${a}-10)))`;
   const selPart = g.sel ? `-${rd(L, g.sel)}/${g.sel}*${g.selS}` : '';
   const card = `MIN(ROUNDDOWN(${sec(L)}*${g.card},-1),IF(${sec(L)}>=${g.hi},${g.capH},${g.capL}))*${g.cardS}`;
   const settle = `${L}-${L}*${g.fee}-${L}*${g.pro}${selPart}-${rd(L, g.dup)}-${card}`;
   return {
-    max: ((b) => `${b}-MIN(ROUNDDOWN(${b}*${g.card},-1),IF(${b}>=${g.hi},${g.capH},${g.capL}))`)(g.mdMax ? `(${o}-ROUNDDOWN(${o}*${g.md},-1))` : o),
+    max: `${o}-MIN(ROUNDDOWN(${o}*${g.card},-1),IF(${o}>=${g.hi},${g.capH},${g.capL}))`,
     margin: `IF(${cost}="","",${settle}-${cost})`,
     rate: `IF(OR(${cost}="",${cost}=0),"",K{r}/${cost})`,
   };
